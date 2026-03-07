@@ -29,7 +29,7 @@ const swaggerOptions = {
         servers: [
             { url: 'http://localhost:5000', description: 'Servidor Local' }
         ],
-        // --- NOVA SECÇÃO: Adiciona o botão "Authorize" no Swagger ---
+       
         components: {
             securitySchemes: {
                 bearerAuth: {
@@ -40,7 +40,7 @@ const swaggerOptions = {
             }
         }
     },
-    apis: ['./routes/*.js', './server.js'], // Adicionei o server.js para ele ler a rota de teste
+    apis: ['./routes/*.js', './server.js'], 
 };
 const swaggerDocs = swaggerJsDoc(swaggerOptions);
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
@@ -70,6 +70,37 @@ app.get('/api/perfil', verificarToken, (req, res) => {
         dados_do_utilizador: req.user 
     });
 });
+
+const verificarAdmin = require('./middlewares/admin');
+// ==========================================
+
+/**
+ * @swagger
+ * /api/admin/dashboard:
+ *   get:
+ *     summary: Área Exclusiva de Administração
+ *     description: Rota super protegida. Requer Token JWT E que o utilizador seja Administrador.
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Sucesso. Bem-vindo Admin.
+ *       401:
+ *         description: Falta o Token.
+ *       403:
+ *         description: Acesso negado. Não é administrador.
+ */
+// REPARA: Estamos a usar os DOIS middlewares em "corrente" (verificarToken primeiro, verificarAdmin depois)
+app.get('/api/admin/dashboard', verificarToken, verificarAdmin, (req, res) => {
+    res.json({ 
+        message: "Bem-vindo ao Painel de Administração Supremo! 👑", 
+        acesso_concedido: true 
+    });
+});
+
+
 app.get('/', (req, res) => {
     res.send('API Reserva Office a funcionar! 🚀');
 });

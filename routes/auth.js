@@ -57,4 +57,63 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ message: "Credenciais inválidas" });
 });
 
+/**
+ * @swagger
+ * /api/auth/register:
+ *   post:
+ *     summary: Registar um novo utilizador
+ *     description: Cria uma nova conta de utilizador no sistema. (A usar Mock Data)
+ *     tags:
+ *       - Autenticação
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               nome:
+ *                 type: string
+ *                 example: "João Silva"
+ *               email:
+ *                 type: string
+ *                 example: "joao.silva@softinsa.pt"
+ *               password:
+ *                 type: string
+ *                 example: "123456"
+ *     responses:
+ *       201:
+ *         description: Utilizador criado com sucesso.
+ *       400:
+ *         description: Dados inválidos ou email já registado.
+ */
+router.post('/register', (req, res) => {
+    const { nome, email, password } = req.body;
+
+    // 1. Validação simples: verificar se os dados vieram todos
+    if (!nome || !email || !password) {
+        return res.status(400).json({ message: "Por favor, preencha todos os campos." });
+    }
+
+    // 2. MOCK DATA: Simular que vamos à Base de Dados ver se o email já existe
+    if (email === "admin@softinsa.pt") {
+        return res.status(400).json({ message: "Este email já se encontra registado." });
+    }
+
+    // 3. MOCK DATA: Simular a criação do utilizador na Base de Dados
+    const newUser = {
+        id: Math.floor(Math.random() * 1000),
+        nome: nome,
+        email: email,
+        role: "user"
+    };
+
+    // 4. Responder com sucesso
+    return res.status(201).json({ 
+        message: "Utilizador criado com sucesso!", 
+        user: newUser 
+    });
+});
+
+
 module.exports = router;
