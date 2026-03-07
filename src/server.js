@@ -10,8 +10,12 @@ const swaggerJsDoc = require('swagger-jsdoc');
 
 const app = express();
 
+// middlewares globais
 app.use(express.json());
 app.use(cors());
+
+const resourceRoutes = require('./routes/resourceRoutes');
+app.use('/api/resources', resourceRoutes);
 
 const swaggerOptions = {
     definition: {
