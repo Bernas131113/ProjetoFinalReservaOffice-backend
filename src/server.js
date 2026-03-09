@@ -1,7 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-
+app.use(cors()); 
+app.use(express.json());
 
 const db = require('./config/db'); 
 
@@ -34,7 +35,14 @@ const swaggerOptions = {
             }
         },
         servers: [
-            { url: 'http://localhost:5000', description: 'Servidor Local' }
+            {
+                url: 'https://projetofinalreservaoffice-backend.onrender.com',
+                description: 'Servidor de Produção (Render)'
+            },
+            {
+                url: 'http://localhost:5000',
+                description: 'Servidor Local'
+            }
         ],
        
         components: {
