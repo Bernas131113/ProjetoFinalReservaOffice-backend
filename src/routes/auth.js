@@ -1,14 +1,15 @@
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
+const authController = require('../controllers/authController');
 
 /**
  * @swagger
  * /api/auth/login:
  *   post:
  *     summary: Fazer login no sistema
- *     description: Autentica um utilizador e devolve um token JWT. (A usar Mock Data)
- *     tags: [Autenticação]
+ *     description: Autentica um utilizador verificando na Base de Dados e devolve um token JWT.
+ *     tags:
+ *       - Autenticação
  *     requestBody:
  *       required: true
  *       content:
@@ -28,41 +29,14 @@ const jwt = require('jsonwebtoken');
  *       401:
  *         description: Credenciais inválidas
  */
-router.post('/login', (req, res) => {
-    const { email, password } = req.body;
-
-   
-    const mockUser = { 
-        id: 1, 
-        email: "admin@softinsa.pt", 
-        password_hash: "123456", 
-        role: "admin" 
-    };
-
-    
-    if (email === mockUser.email && password === mockUser.password_hash) {
-        
-        
-        const secret = process.env.JWT_SECRET || 'chave_super_secreta_provisoria';
-        const token = jwt.sign(
-            { id: mockUser.id, role: mockUser.role }, 
-            secret, 
-            { expiresIn: '1h' } 
-        );
-
-        return res.json({ message: "Login com sucesso!", token });
-    }
-
-    
-    return res.status(401).json({ message: "Credenciais inválidas" });
-});
+router.post('/login', authController.login);
 
 /**
  * @swagger
  * /api/auth/register:
  *   post:
  *     summary: Registar um novo utilizador
- *     description: Cria uma nova conta de utilizador no sistema. (A usar Mock Data)
+ *     description: Cria uma nova conta de utilizador na Base de Dados.
  *     tags:
  *       - Autenticação
  *     requestBody:
@@ -72,7 +46,7 @@ router.post('/login', (req, res) => {
  *           schema:
  *             type: object
  *             properties:
- *               nome:
+ *               name:
  *                 type: string
  *                 example: "João Silva"
  *               email:
@@ -87,33 +61,6 @@ router.post('/login', (req, res) => {
  *       400:
  *         description: Dados inválidos ou email já registado.
  */
-router.post('/register', (req, res) => {
-    const { nome, email, password } = req.body;
-
-    // 1. Validação simples: verificar se os dados vieram todos
-    if (!nome || !email || !password) {
-        return res.status(400).json({ message: "Por favor, preencha todos os campos." });
-    }
-
-    // 2. MOCK DATA: Simular que vamos à Base de Dados ver se o email já existe
-    if (email === "admin@softinsa.pt") {
-        return res.status(400).json({ message: "Este email já se encontra registado." });
-    }
-
-    // 3. MOCK DATA: Simular a criação do utilizador na Base de Dados
-    const newUser = {
-        id: Math.floor(Math.random() * 1000),
-        nome: nome,
-        email: email,
-        role: "user"
-    };
-
-    // 4. Responder com sucesso
-    return res.status(201).json({ 
-        message: "Utilizador criado com sucesso!", 
-        user: newUser 
-    });
-});
-
+router.post('/register', authController.register);
 
 module.exports = router;

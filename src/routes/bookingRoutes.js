@@ -1,0 +1,112 @@
+const express = require('express');
+const router = express.Router();
+const bookingController = require('../controllers/bookingController');
+const verificarToken = require('../middlewares/auth');
+const verificarAdmin = require('../middlewares/admin');
+
+/**
+ * @swagger
+ * /api/bookings/{id}/cancel:
+ *   put:
+ *     summary: Cancelar uma reserva
+ *     description: Altera o estado de uma reserva para "cancelled". O utilizador só pode cancelar as suas próprias reservas.
+ *     tags:
+ *       - Reservas
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: integer
+ *         description: ID da reserva a cancelar
+ *     responses:
+ *       200:
+ *         description: Reserva cancelada com sucesso.
+ *       400:
+ *         description: Reserva já estava cancelada.
+ *       404:
+ *         description: Reserva não encontrada ou não pertence ao utilizador.
+ *       401:
+ *         description: Não autenticado.
+ */
+router.put('/:id/cancel', verificarToken, bookingController.cancelBooking);
+
+/**
+ * @swagger
+ * /api/bookings:
+ *   get:
+ *     summary: Listar as reservas do utilizador logado
+ *     description: Devolve todas as reservas feitas pelo utilizador autenticado (A Minha Agenda).
+ *     tags:
+ *       - Reservas
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de reservas recuperada com sucesso.
+ *       401:
+ *         description: Não autenticado.
+ */
+router.get('/', verificarToken, bookingController.getUserBookings);
+
+/**
+ * @swagger
+ * /api/bookings/all:
+ *   get:
+ *     summary: Listar TODAS as reservas (Apenas Admin)
+ *     description: Devolve todas as reservas de todos os utilizadores. Requer privilégios de administrador.
+ *     tags:
+ *       - Admin
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Lista de todas as reservas recuperada com sucesso.
+ *       401:
+ *         description: Não autenticado.
+ *       403:
+ *         description: Acesso negado. Apenas administradores podem ver esta lista.
+ */
+router.get('/all', verificarToken, verificarAdmin, bookingController.getAllBookings);
+
+/**
+ * @swagger
+ * /api/bookings:
+ *   post:
+ *     summary: Criar uma nova reserva
+ *     description: Permite a um utilizador autenticado reservar um recurso (Mesa, Sala, etc).
+ *     tags:
+ *       - Reservas
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               resource_id:
+ *                 type: integer
+ *                 example: 1
+ *               start_time:
+ *                 type: string
+ *                 format: date-time
+ *                 example: "2026-03-10 09:00:00"
+ *               end_time:
+ *                 type: string
+ *                 format: date-time
+ *                 example: "2026-03-10 18:00:00"
+ *     responses:
+ *       201:
+ *         description: Reserva efetuada com sucesso.
+ *       400:
+ *         description: Dados incompletos.
+ *       401:
+ *         description: Não autenticado.
+ */
+router.post('/', verificarToken, bookingController.createBooking);
+
+module.exports = router;

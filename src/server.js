@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 
-// iniciar a ligação à Base de Dados
+
 const db = require('./config/db'); 
 
 const swaggerUi = require('swagger-ui-express');
@@ -10,14 +10,17 @@ const swaggerJsDoc = require('swagger-jsdoc');
 
 const app = express();
 
-// middlewares globais
+
 app.use(express.json());
 app.use(cors());
 
 const resourceRoutes = require('./routes/resourceRoutes');
 app.use('/api/resources', resourceRoutes);
+const bookingRoutes = require('./routes/bookingRoutes');
+app.use('/api/bookings', bookingRoutes);
 const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
+
 
 const swaggerOptions = {
     definition: {
@@ -76,7 +79,7 @@ app.get('/api/perfil', verificarToken, (req, res) => {
 });
 
 const verificarAdmin = require('./middlewares/admin');
-// ==========================================
+
 
 /**
  * @swagger
@@ -96,7 +99,7 @@ const verificarAdmin = require('./middlewares/admin');
  *       403:
  *         description: Acesso negado. Não é administrador.
  */
-// REPARA: Estamos a usar os DOIS middlewares em "corrente" (verificarToken primeiro, verificarAdmin depois)
+
 app.get('/api/admin/dashboard', verificarToken, verificarAdmin, (req, res) => {
     res.json({ 
         message: "Bem-vindo ao Painel de Administração Supremo! 👑", 
