@@ -1,27 +1,25 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-app.use(cors()); 
-app.use(express.json());
-
 const db = require('./config/db'); 
-
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsDoc = require('swagger-jsdoc');
+
 
 const app = express();
 
 
+app.use(cors()); 
 app.use(express.json());
-app.use(cors());
+
 
 const resourceRoutes = require('./routes/resourceRoutes');
-app.use('/api/resources', resourceRoutes);
 const bookingRoutes = require('./routes/bookingRoutes');
-app.use('/api/bookings', bookingRoutes);
 const authRoutes = require('./routes/auth');
-app.use('/api/auth', authRoutes);
 
+app.use('/api/resources', resourceRoutes);
+app.use('/api/bookings', bookingRoutes);
+app.use('/api/auth', authRoutes);
 
 const swaggerOptions = {
     definition: {
