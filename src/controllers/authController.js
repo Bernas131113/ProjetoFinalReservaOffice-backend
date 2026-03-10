@@ -2,6 +2,14 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const db = require('../config/db');
 
+
+/**
+ * Autentica um utilizador e gera um Token de Sessão (JWT).
+ * Valida as credenciais inseridas comparando-as com as da base de dados.
+ * Se forem válidas, assina um token que contém o ID e o Role (cargo) do utilizador.
+ * * @param {Object} req - Pedido HTTP que contém email e password.
+ * @param {Object} res - Resposta HTTP que contém a mensagem de sucesso e o Token.
+ */
 exports.login = async (req, res) => {
     const { email, password } = req.body;
 
@@ -38,6 +46,13 @@ exports.login = async (req, res) => {
     }
 };
 
+/**
+ * Regista um novo utilizador no sistema.
+ * Recebe os dados do utilizador, verifica se o email já está em uso,
+ * e guarda o novo registo na base de dados (idealmente com a password encriptada).
+ * * @param {Object} req - Pedido HTTP que contém nome, email e password no body.
+ * @param {Object} res - Resposta HTTP.
+ */
 exports.register = async (req, res) => {
     const { name, email, password } = req.body;
 

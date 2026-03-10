@@ -1,47 +1,23 @@
 const db = require('../config/db'); 
 
+/**
+ * Cria uma nova reserva para um recurso específico.
+ * Inclui validação para evitar sobreposição de horários (double-booking).
+ * * @param {Object} req - Objeto do pedido (request). Deve conter resource_id, start_time e end_time no body.
+ * @param {Object} res - Objeto da resposta (response).
+ */
 exports.createBooking = async (req, res) => {
 
     const { resource_id, start_time, end_time } = req.body;
+    const user_id = req.user.id; // Extraído pelo middleware de autenticação
 
-  
-    const user_id = req.user.id; 
-
-
+    // 1. Validação de dados de entrada
     if (!resource_id || !start_time || !end_time) {
         return res.status(400).json({ message: "Por favor, forneça o recurso, a data/hora de início e de fim." });
     }
 
     try {
-
-        const [result] = await db.execute(
-            'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status) VALUES (?, ?, ?, ?, ?)',
-            [user_id, resource_id, start_time, end_time, 'confirmed']
-        );
-
-        return res.status(201).json({ 
-            message: "Reserva efetuada com sucesso!", 
-            booking_id: result.insertId 
-        });
-
-    } catch (error) {
-        console.error("Erro ao criar reserva:", error);
-        return res.status(500).json({ message: "Erro interno ao processar a reserva." });
-    }
-};
-
-exports.createBooking = async (req, res) => {
-
-    const { resource_id, start_time, end_time } = req.body;
-    const user_id = req.user.id; 
-
-
-    if (!resource_id || !start_time || !end_time) {
-        return res.status(400).json({ message: "Por favor, forneça o recurso, a data/hora de início e de fim." });
-    }
-
-    try {
-
+        // 2. Verificação de Conflitos: Procura se já existe uma reserva ativa que se sobreponha a este horário
         const queryVerificacao = `
             SELECT id FROM bookings 
             WHERE resource_id = ? 
@@ -53,13 +29,14 @@ exports.createBooking = async (req, res) => {
         
         const [reservasConflituosas] = await db.execute(queryVerificacao, [resource_id, end_time, start_time]);
 
-      
+        // Se o array não estiver vazio, significa que a mesa já está ocupada
         if (reservasConflituosas.length > 0) {
             return res.status(400).json({ 
                 message: "Lamentamos, mas este recurso já se encontra reservado para o horário selecionado." 
             });
         }
-   
+        
+        // 3. Inserção na base de dados caso não existam conflitos
         const [result] = await db.execute(
             'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status) VALUES (?, ?, ?, ?, ?)',
             [user_id, resource_id, start_time, end_time, 'confirmed']
@@ -77,6 +54,9 @@ exports.createBooking = async (req, res) => {
     }
 };
 
+/**
+ * Vai buscar o histórico de reservas exclusivas do utilizador autenticado.
+ */
 exports.getUserBookings = async (req, res) => {
   
     const user_id = req.user.id; 
@@ -107,6 +87,10 @@ exports.getUserBookings = async (req, res) => {
     }
 };
 
+/**
+ * Cancela uma reserva. Verifica primeiro se a reserva pertence ao utilizador
+ * que está a tentar fazer o cancelamento.
+ */
 exports.cancelBooking = async (req, res) => {
    
     const booking_id = req.params.id;

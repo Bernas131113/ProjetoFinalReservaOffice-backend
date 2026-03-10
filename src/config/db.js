@@ -1,7 +1,11 @@
-const mysql = require('mysql2/promise');
+const mysql = require('mysql2/promise'); // Usamos a versão com promises para permitir async/await
 require('dotenv').config();
 
-
+/**
+ * Configuração do Pool de Ligações ao MySQL.
+ * O Pool gere múltiplas ligações simultâneas, reutilizando-as para maior performance
+ * em vez de abrir e fechar uma nova ligação a cada pedido.
+ */
 const pool = mysql.createPool({
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
@@ -10,11 +14,11 @@ const pool = mysql.createPool({
     port: parseInt(process.env.DB_PORT) || 3306,
     ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : null,
     waitForConnections: true,
-    connectionLimit: 10,
+    connectionLimit: 10, // Máximo de 10 ligações em simultâneo
     queueLimit: 0
 });
 
-
+// Testar a ligação quando o servidor arranca
 pool.getConnection()
     .then(connection => {
         console.log('Ligação à base de dados MySQL (Aiven) com sucesso!');

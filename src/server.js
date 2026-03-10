@@ -1,22 +1,22 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+
+// 1. INICIALIZAÇÃO DA BASE DE DADOS
 const db = require('./config/db'); 
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsDoc = require('swagger-jsdoc');
 
-
+// 2. CONFIGURAÇÃO DE MIDDLEWARES GLOBAIS
 const app = express();
+app.use(cors()); // Permite que o Frontend comunique com o Backend
+app.use(express.json()); // Permite ler JSON no body dos pedidos
 
 
-app.use(cors()); 
-app.use(express.json());
-
-
+// 3. DEFINIÇÃO DE ROTAS DA API
 const resourceRoutes = require('./routes/resourceRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const authRoutes = require('./routes/auth');
-
 app.use('/api/resources', resourceRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/auth', authRoutes);
@@ -108,7 +108,7 @@ const verificarAdmin = require('./middlewares/admin');
 
 app.get('/api/admin/dashboard', verificarToken, verificarAdmin, (req, res) => {
     res.json({ 
-        message: "Bem-vindo ao Painel de Administração Supremo! 👑", 
+        message: "Bem-vindo ao Painel de Administração Supremo!", 
         acesso_concedido: true 
     });
 });

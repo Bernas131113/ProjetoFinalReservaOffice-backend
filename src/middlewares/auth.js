@@ -1,15 +1,19 @@
 const jwt = require('jsonwebtoken');
 
+/**
+ * Middleware para proteger rotas.
+ * Verifica se o pedido contém um token JWT válido no cabeçalho 'Authorization'.
+ */
 module.exports = (req, res, next) => {
 
+    // 1. Vai buscar o cabeçalho de autorização
     const authHeader = req.header('Authorization');
 
-   
     if (!authHeader) {
         return res.status(401).json({ message: "Acesso negado. Nenhum token fornecido." });
     }
 
-
+    // 2. Extrai o token real (formato esperado: "Bearer <token_aqui>")
     const token = authHeader.split(' ')[1];
 
     if (!token) {
@@ -17,14 +21,15 @@ module.exports = (req, res, next) => {
     }
 
     try {
-        
+        // 3. Verifica e descodifica o token usando a chave secreta
         const secret = process.env.JWT_SECRET || 'chave_super_secreta_provisoria';
         const decoded = jwt.verify(token, secret);
 
-        
+        // 4. Injeta os dados do utilizador descodificados no objeto do pedido (req)
+        // Isto permite que os controladores saibam quem fez o pedido
         req.user = decoded;
 
-       
+        // 5. Passa o controlo para a próxima função (o controlador da rota)
         next();
     } catch (error) {
        
