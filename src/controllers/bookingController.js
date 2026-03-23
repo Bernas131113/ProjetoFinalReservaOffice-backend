@@ -149,7 +149,7 @@ exports.getAllBookings = async (req, res) => {
                 b.start_time, 
                 b.end_time, 
                 b.status, 
-                u.name AS user_name,
+                u.nome AS user_name,
                 u.email AS user_email,
                 r.name AS resource_name, 
                 r.type AS resource_type
