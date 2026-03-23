@@ -1,0 +1,13 @@
+services:
+  api:
+    build: .
+    container_name: reserva_office_backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+    environment:
+      - NODE_ENV=development

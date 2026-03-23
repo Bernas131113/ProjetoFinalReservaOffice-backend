@@ -1,0 +1,19 @@
+FROM node:20-alpine
+
+# Criar pasta da app
+WORKDIR /usr/src/app
+
+# Copiar ficheiros de dependências
+COPY package*.json ./
+
+# Instalar dependências
+RUN npm install
+
+# Copiar o resto do código
+COPY . .
+
+# A porta que o teu Express usa
+EXPOSE 5000
+
+# Comando para arrancar (usa o start para produção ou dev para desenvolvimento)
+CMD ["npm", "run", "dev"]
