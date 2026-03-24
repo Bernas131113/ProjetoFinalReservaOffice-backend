@@ -5,9 +5,14 @@ async function runSeed() {
     console.log("--- Iniciando Verificação de Segurança da Base de Dados ---");
 
     try {
-        // 1. CRIAR TABELAS APENAS SE NÃO EXISTIREM (Sem DROP TABLE)
-        console.log("Verificando tabelas...");
+        console.log("A limpar tabelas antigas...");
+        await db.query('DROP TABLE IF EXISTS bookings;');
+        await db.query('DROP TABLE IF EXISTS users;');
+        await db.query('DROP TABLE IF EXISTS resources;');
 
+
+        console.log("A criar tabelas...");
+        
         await db.query(`
             CREATE TABLE IF NOT EXISTS users (
                 id INT AUTO_INCREMENT PRIMARY KEY,
