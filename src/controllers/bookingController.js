@@ -113,8 +113,8 @@ exports.cancelBooking = async (req, res) => {
         }
 
         await db.execute(
-            'UPDATE bookings SET status = "cancelled" WHERE id = ?',
-            [booking_id]
+            'UPDATE bookings SET status = ? WHERE id = ?',
+            ['cancelled', booking_id]
         );
 
         return res.status(200).json({ message: "Reserva cancelada com sucesso!" });
