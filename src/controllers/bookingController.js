@@ -121,7 +121,7 @@ exports.cancelBooking = async (req, res) => {
 
     } catch (error) {
         console.error("Erro ao cancelar reserva:", error);
-        return res.status(500).json({ message: "Erro interno ao cancelar a reserva." });
+        return res.status(500).json({ message: `Erro MySQL: ${error.message}` });
     }
 };
 
