@@ -78,3 +78,44 @@ exports.updateResource = async (req, res) => {
         res.status(500).json({ message: 'Erro ao atualizar recurso.' });
     }
 };
+
+/**
+ * Vai buscar os recursos e indica dinamicamente quais estão ocupados
+ * num intervalo de tempo específico (start_time e end_time via query params).
+ */
+exports.getResourcesWithAvailability = async (req, res) => {
+    // 1. Ir buscar as datas escolhidas que vêm no URL
+    const { start, end } = req.query;
+
+    if (!start || !end) {
+        return res.status(400).json({ message: "Por favor, forneça o start e end time." });
+    }
+
+    try {
+        // 2. Query Mágica SQL:
+        // Seleciona todos os recursos E faz um LEFT JOIN com as reservas.
+        // Se houver uma reserva confirmada que se sobrepõe, b.id não será nulo.
+        const query = `
+            SELECT 
+                r.id, r.name, r.type, r.status, r.floor,
+                -- Cria uma coluna booleana (0 ou 1) se houver sobreposição
+                (SELECT COUNT(*) FROM bookings b 
+                 WHERE b.resource_id = r.id 
+                 AND b.status = 'confirmed'
+                 AND b.start_time < ? -- Fim escolhido
+                 AND b.end_time > ?   -- Início escolhido
+                ) > 0 AS is_booked
+            FROM resources r
+        `;
+
+        // Executar a query passando o Fim e depois o Início (ordem do SQL)
+        const [recursos] = await db.execute(query, [end, start]);
+
+        // Devolver a lista com a nova propriedade 'is_booked'
+        return res.status(200).json(recursos);
+
+    } catch (error) {
+        console.error("Erro ao procurar disponibilidade:", error);
+        return res.status(500).json({ message: "Erro interno ao verificar disponibilidade." });
+    }
+};

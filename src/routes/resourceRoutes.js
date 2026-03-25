@@ -136,4 +136,38 @@ router.put(
   resourceController.updateResource
 );
 
+/**
+ * @swagger
+ * /api/resources/availability:
+ *  get:
+ *    summary: Obter recursos com disponibilidade
+ *    description: Retorna a lista de recursos e indica quais estão ocupados no intervalo de tempo fornecido.
+ *    tags:
+ *      - Recursos
+ *    security:
+ *      - bearerAuth: []
+ *    parameters:
+ *      - in: query
+ *        name: start
+ *        required: true
+ *        schema:
+ *          type: string
+ *        description: Data e hora de início (formato YYYY-MM-DD HH:mm:00)
+ *      - in: query
+ *        name: end
+ *        required: true
+ *        schema:
+ *          type: string
+ *        description: Data e hora de fim (formato YYYY-MM-DD HH:mm:00)
+ *    responses:
+ *      200:
+ *        description: Lista de recursos com a flag is_booked.
+ *      400:
+ *        description: Faltam os parâmetros start ou end.
+ */
+router.get(
+  '/availability', 
+  verificarToken, 
+  resourceController.getResourcesWithAvailability);
+
 module.exports = router;
