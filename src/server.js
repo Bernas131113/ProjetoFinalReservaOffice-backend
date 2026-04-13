@@ -5,6 +5,7 @@ const db = require('./config/db');
 const path = require('path'); // Adiciona isto no topo do ficheiro
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsDoc = require('swagger-jsdoc');
+const adminRoutes = require('./routes/adminRoutes');
 
 const app = express();
 
@@ -30,6 +31,7 @@ const authRoutes = require('./routes/auth');
 app.use('/api/resources', resourceRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/auth', authRoutes);
+app.use('/api/admin', adminRoutes);
 
 // 3. SWAGGER
 const swaggerOptions = {

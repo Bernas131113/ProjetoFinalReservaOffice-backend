@@ -163,31 +163,4 @@ router.post('/forgot-password', authController.forgotPassword);
  */
 router.post('/reset-password', authController.resetPassword);
 
-const adminMiddleware = require('../middlewares/admin');
-
-/**
- * @swagger
- * /api/auth/users:
- *   get:
- *     summary: Listar todos os utilizadores (Apenas Admin)
- *     description: Devolve a lista de todos os utilizadores registados. Requer permissões de administrador.
- *     tags:
- *       - Autenticação
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Lista de utilizadores obtida com sucesso
- *       401:
- *         description: Não autenticado (Token em falta ou inválido)
- *       403:
- *         description: Acesso negado (Apenas administradores)
- */
-router.get(
-  '/users',
-  authMiddleware,
-  adminMiddleware,
-  authController.getAllUsers
-);
-
 module.exports = router;
