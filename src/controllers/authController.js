@@ -245,3 +245,49 @@ exports.getAllUsers = async (req, res) => {
         res.status(500).json({ message: 'Erro ao obter utilizadores.' });
     }
 };
+exports.getAllUsers = async (req, res) => {
+    try {
+        const [users] = await db.query('SELECT id, name, email, role, created_at FROM users');
+        res.status(200).json(users);
+    } catch (error) {
+        console.error('Erro ao listar users:', error);
+        res.status(500).json({ message: 'Erro ao obter utilizadores.' });
+    }
+};
+
+exports.updateUser = async (req, res) => {
+    const { id } = req.params;
+    const { name, email, role } = req.body;
+
+    try {
+        const [userExists] = await db.query('SELECT * FROM users WHERE id = ?', [id]);
+        if (userExists.length === 0) {
+            return res.status(404).json({ message: 'Utilizador não encontrado.' });
+        }
+
+        await db.query(
+            'UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?',
+            [name, email, role, id]
+        );
+
+        res.json({ message: 'Utilizador atualizado com sucesso!' });
+    } catch (error) {
+        console.error('Erro ao atualizar utilizador:', error);
+        res.status(500).json({ message: 'Erro ao atualizar dados.' });
+    }
+};
+
+exports.deleteUser = async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const [result] = await db.query('DELETE FROM users WHERE id = ?', [id]);
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ message: 'Utilizador não encontrado.' });
+        }
+        res.json({ message: 'Utilizador removido com sucesso.' });
+    } catch (error) {
+        console.error('Erro ao eliminar utilizador:', error);
+        res.status(500).json({ message: 'Erro ao remover utilizador.' });
+    }
+};
