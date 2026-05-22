@@ -7,6 +7,7 @@ const path = require('path');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsDoc = require('swagger-jsdoc');
 const adminRoutes = require('./routes/adminRoutes');
+const picklistRoutes = require('./routes/picklistRoutes');
 
 const app = express();
 
@@ -40,6 +41,7 @@ app.use('/api/resources', resourceRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/picklists', picklistRoutes);
 
 // 3. SWAGGER (Apenas em Desenvolvimento)
 if (process.env.NODE_ENV !== 'production') {
