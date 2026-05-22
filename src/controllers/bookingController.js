@@ -9,28 +9,42 @@ exports.createBooking = async (req, res) => {
         return res.status(400).json({ message: "Por favor, forneça o recurso, a data/hora de início e de fim." });
     }
 
+    let connection;
     try {
-        // Verificar se já existe uma reserva ativa no mesmo horário
+        // Obter uma ligação do pool para gerir a transação
+        connection = await db.getConnection();
+        
+        // 1. INICIAR TRANSAÇÃO
+        await connection.beginTransaction();
+
+        // 2. VERIFICAR CONFLITOS COM BLOQUEIO DE ESCRITA (FOR UPDATE)
+        // O FOR UPDATE impede que outros pedidos leiam estas mesmas linhas até a transação terminar
         const queryVerificacao = `
             SELECT id FROM bookings 
             WHERE resource_id = ? 
             AND status = 'confirmed'
             AND start_time < ? 
             AND end_time > ?
+            FOR UPDATE
         `;
         
-        const [reservasConflituosas] = await db.execute(queryVerificacao, [resource_id, end_time, start_time]);
+        const [reservasConflituosas] = await connection.execute(queryVerificacao, [resource_id, end_time, start_time]);
 
         if (reservasConflituosas.length > 0) {
+            await connection.rollback();
             return res.status(400).json({ 
                 message: "Lamentamos, mas este recurso já se encontra reservado para o horário selecionado." 
             });
         }
         
-        const [result] = await db.execute(
+        // 3. INSERIR A RESERVA
+        const [result] = await connection.execute(
             'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status) VALUES (?, ?, ?, ?, ?)',
             [user_id, resource_id, start_time, end_time, 'confirmed']
         );
+
+        // 4. CONFIRMAR TRANSAÇÃO
+        await connection.commit();
 
         return res.status(201).json({ 
             message: "Reserva efetuada com sucesso!", 
@@ -38,8 +52,13 @@ exports.createBooking = async (req, res) => {
         });
 
     } catch (error) {
+        // 5. ANULAR ALTERAÇÕES EM CASO DE ERRO
+        if (connection) await connection.rollback();
         console.error("Erro ao criar reserva:", error);
         return res.status(500).json({ message: "Erro interno ao processar a reserva." });
+    } finally {
+        // Libertar a ligação de volta para o pool
+        if (connection) connection.release();
     }
 };
 

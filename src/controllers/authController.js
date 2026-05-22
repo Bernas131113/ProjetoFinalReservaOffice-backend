@@ -25,14 +25,14 @@ exports.login = async (req, res) => {
 
 
         const accessToken = jwt.sign(
-            { id: user.id, role: user.role }, 
+            { id: user.id, role: user.role, version: user.token_version }, 
             process.env.JWT_SECRET, 
             { expiresIn: '15m' }
         );
 
        
         const refreshToken = jwt.sign(
-            { id: user.id }, 
+            { id: user.id, version: user.token_version }, 
             process.env.JWT_REFRESH_SECRET, 
             { expiresIn: '7d' }
         );
@@ -44,8 +44,7 @@ exports.login = async (req, res) => {
         res.json({
             message: 'Login com sucesso',
             accessToken,
-            refreshToken,
-            user: { id: user.id, name: user.name, email: user.email, role: user.role }
+            refreshToken
         });
     } catch (error) {
         console.error('Erro no login:', error);
@@ -71,9 +70,11 @@ exports.refreshToken = async (req, res) => {
             return res.status(403).json({ message: 'Refresh Token inválido ou revogado. Faz login novamente.' });
         }
 
+        const user = users[0];
+
   
         const newAccessToken = jwt.sign(
-            { id: users[0].id, role: users[0].role }, 
+            { id: user.id, role: user.role, version: user.token_version }, 
             process.env.JWT_SECRET, 
             { expiresIn: '15m' }
         );
@@ -89,11 +90,26 @@ exports.refreshToken = async (req, res) => {
 exports.logout = async (req, res) => {
     const { id } = req.user; 
     try {
-        await db.query('UPDATE users SET refresh_token = NULL WHERE id = ?', [id]);
+        // Incrementa a versão do token para invalidar TODOS os access tokens atuais
+        await db.query('UPDATE users SET refresh_token = NULL, token_version = token_version + 1 WHERE id = ?', [id]);
         res.json({ message: 'Sessão terminada com sucesso.' });
     } catch (error) {
         res.status(500).json({ message: 'Erro ao terminar sessão.' });
     }
+};
+
+/**
+ * Funções auxiliares de validação
+ */
+const validateEmail = (email) => {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email);
+};
+
+const validatePassword = (password) => {
+    // Pelo menos 8 caracteres, uma letra maiúscula, uma minúscula e um número
+    const re = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/;
+    return re.test(password);
 };
 
 /**
@@ -106,8 +122,21 @@ exports.logout = async (req, res) => {
 exports.register = async (req, res) => {
     const { name, email, password } = req.body;
 
-    if (!name || !email || !password) {
-        return res.status(400).json({ message: "Por favor, preencha todos os campos." });
+    // 1. Validação de Campos Obrigatórios
+    if (!name || !name.trim() || !email || !password) {
+        return res.status(400).json({ message: "Por favor, preencha todos os campos obrigatórios." });
+    }
+
+    // 2. Validação de Formato de Email
+    if (!validateEmail(email)) {
+        return res.status(400).json({ message: "O formato do email é inválido." });
+    }
+
+    // 3. Validação de Password Forte
+    if (!validatePassword(password)) {
+        return res.status(400).json({ 
+            message: "A password deve ter pelo menos 8 caracteres, incluindo uma letra maiúscula, uma minúscula e um número." 
+        });
     }
 
     try {
@@ -123,7 +152,7 @@ exports.register = async (req, res) => {
 
         const [result] = await db.execute(
             'INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)',
-            [name, email, hashedPassword, role]
+            [name.trim(), email, hashedPassword, role]
         );
 
         return res.status(201).json({ 
@@ -200,6 +229,13 @@ exports.resetPassword = async (req, res) => {
         return res.status(400).json({ message: 'Token e nova password são obrigatórios.' });
     }
 
+    // Validação de Password Forte
+    if (!validatePassword(newPassword)) {
+        return res.status(400).json({ 
+            message: "A password deve ter pelo menos 8 caracteres, incluindo uma letra maiúscula, uma minúscula e um número." 
+        });
+    }
+
     try {
        
         const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
@@ -234,16 +270,6 @@ exports.resetPassword = async (req, res) => {
     } catch (error) {
         console.error('Erro no resetPassword:', error);
         res.status(500).json({ message: 'Erro interno no servidor.' });
-    }
-};
-exports.getAllUsers = async (req, res) => {
-    try {
-       
-        const [users] = await db.query('SELECT id, name, email, role FROM users');
-        res.status(200).json(users);
-    } catch (error) {
-        console.error('Erro ao listar users:', error);
-        res.status(500).json({ message: 'Erro ao obter utilizadores.' });
     }
 };
 exports.getAllUsers = async (req, res) => {

@@ -1,10 +1,11 @@
 const jwt = require('jsonwebtoken');
+const db = require('../config/db');
 
 /**
  * Middleware para proteger rotas.
  * Verifica se o pedido contém um token JWT válido no cabeçalho 'Authorization'.
  */
-module.exports = (req, res, next) => {
+module.exports = async (req, res, next) => {
 
     // 1. Vai buscar o cabeçalho de autorização
     const authHeader = req.header('Authorization');
@@ -28,11 +29,18 @@ module.exports = (req, res, next) => {
         }
         const decoded = jwt.verify(token, secret);
 
-        // 4. Injeta os dados do utilizador descodificados no objeto do pedido (req)
-        // Isto permite que os controladores saibam quem fez o pedido
+        // 4. VERIFICAÇÃO DE VERSÃO (Invalidação no Logout)
+        // Comparamos a versão no token com a versão atual na Base de Dados
+        const [users] = await db.query('SELECT token_version FROM users WHERE id = ?', [decoded.id]);
+        
+        if (users.length === 0 || users[0].token_version !== decoded.version) {
+            return res.status(401).json({ message: "Sessão expirada ou terminada. Faça login novamente." });
+        }
+
+        // 5. Injeta os dados do utilizador descodificados no objeto do pedido (req)
         req.user = decoded;
 
-        // 5. Passa o controlo para a próxima função (o controlador da rota)
+        // 6. Passa o controlo para a próxima função
         next();
     } catch (error) {
        

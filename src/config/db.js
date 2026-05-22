@@ -53,6 +53,11 @@ const inicializarEstrutura = async () => {
             console.log('Coluna features (JSON) adicionada aos recursos.');
         } catch (e) { /* Coluna já existe */ }
 
+        try {
+            await connection.query("ALTER TABLE users ADD COLUMN token_version INT NOT NULL DEFAULT 0");
+            console.log('Coluna token_version adicionada.');
+        } catch (e) { /* Coluna já existe */ }
+
         console.log('--- Estrutura da Base de Dados OK ---');
     } catch (err) {
         console.error('Erro na migração automática:', err.message);
