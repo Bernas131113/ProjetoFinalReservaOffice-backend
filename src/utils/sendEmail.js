@@ -17,7 +17,8 @@ const sendEmail = async (options) => {
         socketTimeout: 20000,
         dnsTimeout: 10000,
         tls: {
-            servername: 'smtp.gmail.com'
+            servername: 'smtp.gmail.com',
+            rejectUnauthorized: false
         }
     });
 
