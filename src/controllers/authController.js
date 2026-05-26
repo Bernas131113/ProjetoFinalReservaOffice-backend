@@ -432,3 +432,25 @@ exports.deleteUser = async (req, res) => {
         res.status(500).json({ message: 'Erro ao remover utilizador.' });
     }
 };
+
+
+// Devolve os dados atualizados do utilizador autenticado, incluindo o nome, email e role. Lê diretamente da base de dados com base no ID presente no token.
+exports.getMe = async (req, res) => {
+    try {
+        // req.user.id é injetado pelo middleware de segurança (verificarToken)
+        const [users] = await db.execute(
+            'SELECT id, name, email FROM users WHERE id = ?',
+            [req.user.id]
+        );
+
+        if (users.length === 0) {
+            return res.status(404).json({ message: 'Utilizador não encontrado.' });
+        }
+
+        // Retorna os dados
+        res.json(users[0]);
+    } catch (error) {
+        console.error('Erro ao obter perfil:', error);
+        res.status(500).json({ message: 'Erro ao obter dados do utilizador.' });
+    }
+};

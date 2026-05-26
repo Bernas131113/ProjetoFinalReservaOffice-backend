@@ -211,4 +211,15 @@ router.post('/forgot-password', forgotPasswordLimiter, authController.forgotPass
  */
 router.post('/reset-password', authController.resetPassword);
 
+
+/**
+ * @swagger
+ * /api/auth/me:
+ *   get:
+ *     summary: Obter dados do utilizador autenticado
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/me', authMiddleware, authController.getMe);
+
 module.exports = router;
