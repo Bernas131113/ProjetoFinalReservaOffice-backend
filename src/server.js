@@ -9,6 +9,9 @@ const swaggerUi = require('swagger-ui-express');
 const swaggerJsDoc = require('swagger-jsdoc');
 const adminRoutes = require('./routes/adminRoutes');
 const picklistRoutes = require('./routes/picklistRoutes');
+const logger = require('./logger');
+const pinoHttp = require('pino-http');
+const { randomUUID } = require('crypto');
 
 const app = express();
 
@@ -17,7 +20,60 @@ app.set('trust proxy', 1);
 
 // 0.1 LOGGING (Morgan)
 // Formato 'dev' dá output colorido com: :method :url :status :response-time ms - :res[content-length]
-app.use(morgan('dev'));
+//app.use(morgan('dev'));
+
+
+/*morgan.token('user-id', (req) =>{ 
+    return req.user ? `UserID:${req.user.id}` : 'Anónimo';
+});*/
+
+//formato da auditoria
+/*const auditFormat=':remote-addr - [:date[web]] ":method :url" :status :response-time ms - :res[content-length] :user-id';
+app.use(morgan(auditFormat));*/
+
+
+/*app.use((req, res, next) => {
+
+    const start = Date.now();
+
+}*/
+
+const httpLogger=pinoHttp({
+    logger,
+    genReqId: (req,res) => {
+        const id= req.headers['x-request-id'] ?? randomUUID()
+        res.setHeader('X-Request-ID', id)
+        return id;
+    },
+    customSuccessObject: (req, res, val, responseTime) => ({
+        responseTimeMs: responseTime,
+        userId: req.user ? req.user.id : null,
+        statusCode: res.statusCode,
+    }),
+    customErrorObject: (req, res, err, responseTime) => ({
+        responseTimeMs: responseTime,
+        userId: req.user ? req.user.id : null,
+        errorMessage: err.message,
+    }),
+    serializers: {
+        req: (req) => ({
+            id: req.id,
+            method: req.method,
+            url: req.url,
+            // userId: req
+            // userId: req.user ? req.user.id : 'Anónimo',
+        }),
+        res: (res) => ({
+            statusCode: res.statusCode,
+        }),
+    },
+});
+
+app.use(httpLogger);
+
+// app.use(pinoHttp({ logger }));
+
+
 
 // 1. SEGURANÇA (Headers HTTP e CORS)
 app.use(helmet({
@@ -36,6 +92,8 @@ app.use(cors({
 }));
 
 app.use(express.json({ limit: '10kb' }));
+
+
 
 // 2. ROTAS
 const resourceRoutes = require('./routes/resourceRoutes');
@@ -137,8 +195,16 @@ app.get('/api/admin/dashboard', verificarToken, verificarAdmin, (req, res) => {
     });
 });
 
+
+
+
+
 // ROTA BASE
 app.get('/', (req, res) => {
+    logger.info('Home page accessed');
+    logger.error('Home page accessed');
+    logger.info(req.id);
+    req.log.info('Home page accessed with pino-http');
     res.send('API Reserva Office Online na Vercel! 🚀');
 });
 
@@ -151,6 +217,8 @@ if (process.env.NODE_ENV !== 'production') {
         console.log(`Swagger: http://localhost:${PORT}/api-docs`);
     });
 }
+
+
 
 // OBRIGATÓRIO PARA VERCEL
 module.exports = app;
