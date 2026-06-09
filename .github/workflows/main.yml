@@ -1,0 +1,17 @@
+name: Sync Fork Automatico
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Corre de hora a hora (podes mudar)
+  workflow_dispatch: # Permite correr manualmente se quiseres
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Sincronizar com o repositório original
+        run: gh repo sync $GITHUB_REPOSITORY -b main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
