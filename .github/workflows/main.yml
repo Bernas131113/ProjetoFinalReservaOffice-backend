@@ -2,7 +2,7 @@ name: Sync Fork Automatico
 
 on:
   schedule:
-    - cron: '0 * * * *' # Corre de hora a hora (podes mudar)
+    - cron: '*/5 * * * *' # Corre de hora a hora (podes mudar)
   workflow_dispatch: # Permite correr manualmente se quiseres
 
 jobs:
