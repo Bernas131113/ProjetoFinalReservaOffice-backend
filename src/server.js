@@ -84,12 +84,14 @@ const bookingRoutes = require('./routes/bookingRoutes');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/adminRoutes');
 const picklistRoutes = require('./routes/picklistRoutes');
+const officeRoutes = require('./routes/officeRoutes');
 
 app.use('/api/resources', resourceRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/picklists', picklistRoutes);
+app.use('/api/offices', officeRoutes);
 
 // 3. SWAGGER (Apenas em Desenvolvimento)
 if (process.env.NODE_ENV !== 'production') {

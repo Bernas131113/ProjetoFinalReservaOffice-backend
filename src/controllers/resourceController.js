@@ -51,11 +51,12 @@ exports.getAllResources = async (req, res) => {
         const query = `
             SELECT 
                 r.id, r.name, rt.name as type, 
-                l.building, l.floor, l.zone,
+                o.name as building, l.floor, l.zone,
                 r.status, r.features, r.pos_x, r.pos_y, r.rotation
             FROM resources r 
             LEFT JOIN resource_types rt ON r.type_id = rt.id
             LEFT JOIN locations l ON r.location_id = l.id
+            LEFT JOIN offices o ON l.office_id = o.id
         `;
         const [resources] = await db.execute(query);
         res.status(200).json(resources);
@@ -71,12 +72,13 @@ exports.getAvailableResources = async (req, res) => {
         const query = `
             SELECT 
                 r.id, r.name, rt.name as type, 
-                l.building, l.floor, l.zone,
+                o.name as building, l.floor, l.zone,
                 r.status, r.features
             FROM resources r 
             JOIN resource_types rt ON r.type_id = rt.id
             JOIN locations l ON r.location_id = l.id
-            WHERE r.status = 'active' AND rt.active = TRUE AND l.active = TRUE
+            JOIN offices o ON l.office_id = o.id
+            WHERE r.status = 'active' AND rt.active = TRUE AND l.active = TRUE AND o.active = TRUE
         `;
         const [resources] = await db.execute(query);
         res.status(200).json(resources);
@@ -88,9 +90,32 @@ exports.getAvailableResources = async (req, res) => {
 
 // --- FUNÇÕES DE ADMINISTRAÇÃO DE RECURSOS ---
 
+// Função auxiliar para obter ou criar o ID de uma localização
+const obterOuCriarLocationId = async (building, floor) => {
+    const buildingName = building || 'Edifício Principal';
+    const floorStr = String(floor || 1);
+    
+    // Procurar se já existe esta combinação de edifício e piso
+    const [existing] = await db.execute(
+        'SELECT id FROM locations WHERE building = ? AND floor = ?',
+        [buildingName, floorStr]
+    );
+    
+    if (existing.length > 0) {
+        return existing[0].id;
+    }
+    
+    // Se não existir, criamos a localização
+    const [result] = await db.execute(
+        'INSERT INTO locations (building, floor) VALUES (?, ?)',
+        [buildingName, floorStr]
+    );
+    return result.insertId;
+};
+
 // 3. Criar uma nova mesa ou sala (Admin)
 exports.createResource = async (req, res) => {
-    const { name, type, location_id, status, features } = req.body;
+    const { name, type, location_id, status, features, floor, building } = req.body;
     try {
         let typeId;
         const [types] = await db.execute('SELECT id FROM resource_types WHERE name = ? OR id = ?', [type, type]);
@@ -99,9 +124,15 @@ exports.createResource = async (req, res) => {
         }
         typeId = types[0].id;
 
+        // Se não houver location_id direto, tentamos resolver por building e floor
+        let resolvedLocationId = location_id;
+        if (!resolvedLocationId && floor) {
+            resolvedLocationId = await obterOuCriarLocationId(building, floor);
+        }
+
         const [result] = await db.execute(
             'INSERT INTO resources (name, type_id, location_id, status, features) VALUES (?, ?, ?, ?, ?)',
-            [name, typeId, location_id || null, status || 'active', features ? JSON.stringify(features) : null]
+            [name, typeId, resolvedLocationId || null, status || 'active', features ? JSON.stringify(features) : null]
         );
         res.status(201).json({ message: 'Recurso criado com sucesso!', id: result.insertId });
     } catch (error) {
@@ -113,7 +144,7 @@ exports.createResource = async (req, res) => {
 // 4. Atualizar uma mesa ou sala (Admin)
 exports.updateResource = async (req, res) => {
     const { id } = req.params;
-    const { name, type, location_id, status, features } = req.body;
+    const { name, type, location_id, status, features, floor, building } = req.body;
     try {
         const [resourceExists] = await db.execute('SELECT * FROM resources WHERE id = ?', [id]);
         if (resourceExists.length === 0) {
@@ -129,9 +160,15 @@ exports.updateResource = async (req, res) => {
 
         const oldStatus = resourceExists[0].status;
 
+        // Resolver location_id se building/floor forem fornecidos
+        let resolvedLocationId = location_id;
+        if (!resolvedLocationId && floor) {
+            resolvedLocationId = await obterOuCriarLocationId(building, floor);
+        }
+
         await db.execute(
             'UPDATE resources SET name = ?, type_id = ?, location_id = ?, status = ?, features = ? WHERE id = ?',
-            [name, typeId, location_id || resourceExists[0].location_id, status, features ? JSON.stringify(features) : null, id]
+            [name, typeId, resolvedLocationId || resourceExists[0].location_id, status, features ? JSON.stringify(features) : null, id]
         );
 
         // Se o recurso passou a estar em manutenção, cancelar reservas ativas e notificar
@@ -176,7 +213,7 @@ exports.getResourcesWithAvailability = async (req, res) => {
         const query = `
             SELECT 
                 r.id, r.name, rt.name as type, r.status, 
-                l.building, l.floor, l.zone, r.features,
+                o.name as building, l.floor, l.zone, r.features,
                 r.pos_x, r.pos_y, r.rotation,
                 (SELECT COUNT(*) FROM bookings b 
                  WHERE b.resource_id = r.id 
@@ -195,7 +232,8 @@ exports.getResourcesWithAvailability = async (req, res) => {
             FROM resources r
             LEFT JOIN resource_types rt ON r.type_id = rt.id
             LEFT JOIN locations l ON r.location_id = l.id
-            WHERE (rt.active = TRUE OR rt.id IS NULL) AND (l.active = TRUE OR l.id IS NULL)
+            LEFT JOIN offices o ON l.office_id = o.id
+            WHERE (rt.active = TRUE OR rt.id IS NULL) AND (l.active = TRUE OR l.id IS NULL) AND (o.active = TRUE OR o.id IS NULL)
         `;
 
         const [recursos] = await db.execute(query, [end, start, end, start]);

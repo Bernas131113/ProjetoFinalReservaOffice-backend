@@ -14,7 +14,8 @@ const getAvailabilityValidation = [
 const createResourceValidation = [
     body('name').trim().notEmpty(),
     body('type').isString().notEmpty(),
-    body('floor').isInt()
+    body('floor').isInt(),
+    body('building').optional().isString()
 ];
 
 const updateResourceValidation = [
@@ -22,7 +23,8 @@ const updateResourceValidation = [
     body('name').trim().notEmpty(),
     body('type').isString().notEmpty(),
     body('status').isString().notEmpty(),
-    body('floor').isInt()
+    body('floor').isInt(),
+    body('building').optional().isString()
 ];
 
 const updatePositionValidation = [

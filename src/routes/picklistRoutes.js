@@ -72,7 +72,13 @@ router.get('/user-roles', async (req, res) => {
  */
 router.get('/locations', async (req, res) => {
     try {
-        const [locations] = await db.execute('SELECT id, building, floor, zone FROM locations WHERE active = TRUE');
+        const query = `
+            SELECT l.id, o.name AS building, l.floor, l.zone 
+            FROM locations l
+            JOIN offices o ON l.office_id = o.id
+            WHERE l.active = TRUE AND o.active = TRUE
+        `;
+        const [locations] = await db.execute(query);
         res.json(locations);
     } catch (error) {
         res.status(500).json({ message: "Erro ao obter localizações." });
