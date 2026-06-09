@@ -220,7 +220,7 @@ exports.updateTicketStatus = async (req, res) => {
 
             // Se não houver mais avarias graves ativas, coloca o recurso como ativo novamente
             if (otherHighUrgency.length === 0) {
-                await db.execute('UPDATE resources SET status = "active" WHERE id = ?', [resId]);
+                await db.execute("UPDATE resources SET status = 'active' WHERE id = ?", [resId]);
             }
         }
 
