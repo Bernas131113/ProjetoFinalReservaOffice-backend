@@ -11,7 +11,8 @@ const updateUserValidation = [
     param('id').isInt(),
     body('name').trim().notEmpty(),
     body('email').isEmail().normalizeEmail(),
-    body('role').isString().notEmpty()
+    body('role').isString().notEmpty(),
+    body('home_office_id').optional({ nullable: true }).isInt()
 ];
 
 const deleteUserValidation = [

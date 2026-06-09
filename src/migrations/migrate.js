@@ -195,45 +195,182 @@ try {
             console.error('Erro ao criar tabela email_logs:', e.message);
         }
 
-        // 7. Sistema de Localização Escalável
+        // 7. Sistema de Localização Escalável com Tabela de Escritórios (Offices)
         try {
+            await connection.query(`
+                CREATE TABLE IF NOT EXISTS offices (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL UNIQUE,
+                    address VARCHAR(255) NULL,
+                    operating_hours_start TIME DEFAULT '09:00:00',
+                    operating_hours_end TIME DEFAULT '18:00:00',
+                    timezone VARCHAR(50) DEFAULT 'Europe/Lisbon',
+                    active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            console.log('Tabela offices verificada/criada.');
+
+            // Inicializar com 'Edifício Principal' se estiver vazia
+            const [countOffices] = await connection.query("SELECT COUNT(*) as total FROM offices");
+            if (countOffices[0].total === 0) {
+                await connection.query("INSERT IGNORE INTO offices (name) VALUES ('Edifício Principal')");
+            }
+
+            // Criar a tabela de localizações apontando para offices
             await connection.query(`
                 CREATE TABLE IF NOT EXISTS locations (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    building VARCHAR(100) NOT NULL,
+                    office_id INT NULL,
                     floor VARCHAR(50) NOT NULL,
                     zone VARCHAR(100) NULL,
-                    active BOOLEAN DEFAULT TRUE,
-                    UNIQUE KEY unique_loc (building, floor, zone)
+                    active BOOLEAN DEFAULT TRUE
                 )
             `);
             console.log('Tabela locations verificada.');
 
             // Migração de resources.floor -> locations (FK)
-            const [cols] = await connection.query("SHOW COLUMNS FROM resources LIKE 'location_id'");
-            if (cols.length === 0) {
+            const [colsResource] = await connection.query("SHOW COLUMNS FROM resources LIKE 'location_id'");
+            if (colsResource.length === 0) {
                 await connection.query("ALTER TABLE resources ADD COLUMN location_id INT NULL");
                 
                 // Criar localizações baseadas nos pisos existentes
                 const [existingFloors] = await connection.query("SELECT DISTINCT floor FROM resources");
+                // Garantir um escritório padrão
+                const [firstOffice] = await connection.query("SELECT id FROM offices LIMIT 1");
+                const defOfficeId = firstOffice.length > 0 ? firstOffice[0].id : 1;
+
                 for (const row of existingFloors) {
-                    const building = "Edifício Principal";
                     const floor = String(row.floor);
+                    
+                    // Inserir localização temporária
                     await connection.query(
-                        "INSERT IGNORE INTO locations (building, floor) VALUES (?, ?)", 
-                        [building, floor]
+                        "INSERT INTO locations (office_id, floor) VALUES (?, ?)", 
+                        [defOfficeId, floor]
                     );
-                    await connection.query(
-                        "UPDATE resources SET location_id = (SELECT id FROM locations WHERE building = ? AND floor = ?) WHERE floor = ?",
-                        [building, floor, row.floor]
+                    
+                    // Obter id inserido
+                    const [insertedLoc] = await connection.query(
+                        "SELECT id FROM locations WHERE office_id = ? AND floor = ? LIMIT 1",
+                        [defOfficeId, floor]
                     );
+
+                    if (insertedLoc.length > 0) {
+                        await connection.query(
+                            "UPDATE resources SET location_id = ? WHERE floor = ?",
+                            [insertedLoc[0].id, row.floor]
+                        );
+                    }
                 }
 
                 await connection.query("ALTER TABLE resources MODIFY COLUMN location_id INT NOT NULL");
                 await connection.query("ALTER TABLE resources ADD FOREIGN KEY (location_id) REFERENCES locations(id)");
-                console.log('Migração de localização concluída.');
+                console.log('Migração de localização para recursos concluída.');
             }
-        } catch (e) { console.error('Erro no sistema de localização:', e.message); }
+
+            // Migração de locations.building -> locations.office_id
+            const [colsLocation] = await connection.query("SHOW COLUMNS FROM locations LIKE 'office_id'");
+            const [colsBuilding] = await connection.query("SHOW COLUMNS FROM locations LIKE 'building'");
+
+            // Caso tenhamos a coluna antiga 'building' e 'office_id' ainda seja nula
+            if (colsBuilding.length > 0) {
+                // Adicionar office_id se não existir
+                const [hasOfficeIdCol] = await connection.query("SHOW COLUMNS FROM locations LIKE 'office_id'");
+                if (hasOfficeIdCol.length === 0) {
+                    await connection.query("ALTER TABLE locations ADD COLUMN office_id INT NULL");
+                }
+
+                // Extrair edifícios para offices
+                const [existingLocBuildings] = await connection.query("SELECT DISTINCT building FROM locations WHERE building IS NOT NULL");
+                for (const row of existingLocBuildings) {
+                    await connection.query("INSERT IGNORE INTO offices (name) VALUES (?)", [row.building]);
+                }
+
+                // Atualizar locations.office_id baseado no building
+                await connection.query("UPDATE locations l JOIN offices o ON l.building = o.name SET l.office_id = o.id WHERE l.office_id IS NULL");
+                
+                // Mapear restantes
+                const [defOffice] = await connection.query("SELECT id FROM offices LIMIT 1");
+                if (defOffice.length > 0) {
+                    await connection.query("UPDATE locations SET office_id = ? WHERE office_id IS NULL", [defOffice[0].id]);
+                }
+
+                // Tornar office_id NOT NULL
+                await connection.query("ALTER TABLE locations MODIFY COLUMN office_id INT NOT NULL");
+                
+                // Tentar adicionar a FK
+                try {
+                    await connection.query("ALTER TABLE locations ADD FOREIGN KEY (office_id) REFERENCES offices(id) ON DELETE CASCADE");
+                } catch(err) { /* FK já existe */ }
+
+                // Remover coluna antiga e índice
+                try {
+                    await connection.query("ALTER TABLE locations DROP INDEX unique_loc");
+                } catch(err) {}
+
+                try {
+                    await connection.query("ALTER TABLE locations DROP COLUMN building");
+                } catch(err) {}
+
+                // Criar novo índice único
+                try {
+                    await connection.query("ALTER TABLE locations ADD UNIQUE KEY unique_loc (office_id, floor, zone)");
+                } catch(err) {}
+
+                console.log('Migração de locations.building para offices concluída.');
+            } else {
+                // Se building não existir mas office_id for nulo (caso inicial da tabela nova)
+                const [nullOfficeIds] = await connection.query("SELECT COUNT(*) as total FROM locations WHERE office_id IS NULL");
+                if (nullOfficeIds[0].total > 0 || (await connection.query("SHOW COLUMNS FROM locations LIKE 'office_id'"))[0].length > 0) {
+                    const [defOffice] = await connection.query("SELECT id FROM offices LIMIT 1");
+                    const defOfficeId = defOffice.length > 0 ? defOffice[0].id : 1;
+                    
+                    await connection.query("UPDATE locations SET office_id = ? WHERE office_id IS NULL", [defOfficeId]);
+                    await connection.query("ALTER TABLE locations MODIFY COLUMN office_id INT NOT NULL");
+                    
+                    try {
+                        await connection.query("ALTER TABLE locations ADD FOREIGN KEY (office_id) REFERENCES offices(id) ON DELETE CASCADE");
+                    } catch(err) {}
+                    
+                    try {
+                        await connection.query("ALTER TABLE locations ADD UNIQUE KEY unique_loc (office_id, floor, zone)");
+                    } catch(err) {}
+                }
+            }
+
+        } catch (e) { console.error('Erro no sistema de localização/offices:', e.message); }
+
+        // 7.2. Associação do Utilizador ao Escritório Base (Home Office)
+        try {
+            await connection.query("ALTER TABLE users ADD COLUMN home_office_id INT NULL");
+            console.log('Coluna home_office_id adicionada à tabela users.');
+        } catch (e) { /* Coluna já existe */ }
+
+        try {
+            await connection.query("ALTER TABLE users ADD FOREIGN KEY (home_office_id) REFERENCES offices(id) ON DELETE SET NULL");
+            console.log('Chave estrangeira home_office_id adicionada.');
+        } catch (e) { /* FK já existe */ }
+
+        // 7.3. Tabela de Convidados em Reservas (booking_guests)
+        try {
+            await connection.query(`
+                CREATE TABLE IF NOT EXISTS booking_guests (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    booking_id INT NOT NULL,
+                    user_id INT NULL,
+                    email VARCHAR(255) NOT NULL,
+                    name VARCHAR(255) NULL,
+                    status ENUM('pending', 'accepted', 'declined') DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (booking_id) REFERENCES bookings(id) ON DELETE CASCADE,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL,
+                    UNIQUE KEY unique_booking_guest (booking_id, email)
+                )
+            `);
+            console.log('Tabela booking_guests verificada/criada.');
+        } catch (e) {
+            console.error('Erro ao criar tabela booking_guests:', e.message);
+        }
 
         // 8. Tabela de Auditoria Geral (Audit Logs)
         try {
@@ -287,6 +424,52 @@ try {
             await connection.query("CREATE INDEX idx_resources_status ON resources (status)");
             console.log('Índice idx_resources_status criado.');
         } catch (e) { /* Já existe */ }
+
+        // 9.1 Adicionar parent_booking_id à tabela bookings
+        try {
+            const [cols] = await connection.query("SHOW COLUMNS FROM bookings LIKE 'parent_booking_id'");
+            if (cols.length === 0) {
+                await connection.query("ALTER TABLE bookings ADD COLUMN parent_booking_id INT NULL");
+                await connection.query("ALTER TABLE bookings ADD FOREIGN KEY (parent_booking_id) REFERENCES bookings(id) ON DELETE CASCADE");
+                console.log('Coluna parent_booking_id e FK adicionadas à tabela bookings.');
+            }
+        } catch (e) {
+            console.error('Erro ao adicionar parent_booking_id:', e.message);
+        }
+
+        // 9.2 Adicionar role 'tecnico' às roles
+        try {
+            await connection.query("INSERT IGNORE INTO user_roles (name, label) VALUES ('tecnico', 'Técnico')");
+            console.log("Role 'tecnico' verificada/inserida.");
+        } catch (e) {
+            console.error("Erro ao adicionar role 'tecnico':", e.message);
+        }
+
+        // 9.3 Criar Tabela de Tickets
+        try {
+            await connection.query(`
+                CREATE TABLE IF NOT EXISTS tickets (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    resource_id INT NULL,
+                    reported_by INT NOT NULL,
+                    assigned_to INT NULL,
+                    title VARCHAR(150) NOT NULL,
+                    description TEXT NOT NULL,
+                    urgency ENUM('low', 'medium', 'high') DEFAULT 'medium',
+                    status ENUM('pending', 'in_progress', 'resolved', 'cancelled') DEFAULT 'pending',
+                    resolution_notes TEXT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    resolved_at DATETIME NULL,
+                    FOREIGN KEY (resource_id) REFERENCES resources(id) ON DELETE SET NULL,
+                    FOREIGN KEY (reported_by) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (assigned_to) REFERENCES users(id) ON DELETE SET NULL
+                )
+            `);
+            console.log('Tabela tickets verificada/criada.');
+        } catch (e) {
+            console.error('Erro ao criar tabela tickets:', e.message);
+        }
 
         console.log('--- Migrações Concluídas com Sucesso! ---');
         process.exit(0);

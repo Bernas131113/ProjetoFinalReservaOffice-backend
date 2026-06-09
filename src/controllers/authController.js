@@ -170,7 +170,7 @@ const validatePassword = (password) => {
  * @param {Object} res - Resposta HTTP.
  */
 exports.register = async (req, res) => {
-    const { name, email, password } = req.body;
+    const { name, email, password, home_office_id } = req.body;
 
     // 1. Validação de Campos Obrigatórios
     if (!name || !name.trim() || !email || !password) {
@@ -204,8 +204,8 @@ exports.register = async (req, res) => {
         const roleId = roles[0].id;
 
         const [result] = await db.execute(
-            'INSERT INTO users (name, email, password_hash, role_id) VALUES (?, ?, ?, ?)',
-            [name.trim(), email, hashedPassword, roleId]
+            'INSERT INTO users (name, email, password_hash, role_id, home_office_id) VALUES (?, ?, ?, ?, ?)',
+            [name.trim(), email, hashedPassword, roleId, home_office_id || null]
         );
 
         return res.status(201).json({ 
@@ -330,9 +330,10 @@ exports.resetPassword = async (req, res) => {
 exports.getAllUsers = async (req, res) => {
     try {
         const query = `
-            SELECT u.id, u.name, u.email, ur.name as role, u.created_at 
+            SELECT u.id, u.name, u.email, ur.name as role, u.created_at, u.home_office_id, o.name as home_office
             FROM users u 
             JOIN user_roles ur ON u.role_id = ur.id
+            LEFT JOIN offices o ON u.home_office_id = o.id
         `;
         const [users] = await db.execute(query);
         res.status(200).json(users);
@@ -344,7 +345,7 @@ exports.getAllUsers = async (req, res) => {
 
 exports.updateUser = async (req, res) => {
     const { id } = req.params;
-    const { name, email, role } = req.body;
+    const { name, email, role, home_office_id } = req.body;
 
     // 1. Validação de Campos Obrigatórios
     if (!name || !name.trim() || !email || !role) {
@@ -376,8 +377,8 @@ exports.updateUser = async (req, res) => {
         const roleId = roles[0].id;
 
         await db.execute(
-            'UPDATE users SET name = ?, email = ?, role_id = ? WHERE id = ?',
-            [name.trim(), email, roleId, id]
+            'UPDATE users SET name = ?, email = ?, role_id = ?, home_office_id = ? WHERE id = ?',
+            [name.trim(), email, roleId, home_office_id || null, id]
         );
 
         res.json({ message: 'Utilizador atualizado com sucesso!' });
@@ -439,7 +440,10 @@ exports.getMe = async (req, res) => {
     try {
         // req.user.id é injetado pelo middleware de segurança (verificarToken)
         const [users] = await db.execute(
-            'SELECT id, name, email FROM users WHERE id = ?',
+            `SELECT u.id, u.name, u.email, u.home_office_id, o.name AS home_office 
+             FROM users u 
+             LEFT JOIN offices o ON u.home_office_id = o.id 
+             WHERE u.id = ?`,
             [req.user.id]
         );
 

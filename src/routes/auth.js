@@ -18,6 +18,7 @@ const registerValidation = [
     body('password').isLength({ min: 8 }).withMessage('A password deve ter pelo menos 8 caracteres.')
         .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d).{8,}$/)
         .withMessage('A password deve conter pelo menos uma letra maiúscula, uma minúscula e um número.'),
+    body('home_office_id').optional({ nullable: true }).isInt()
 ];
 
 const resetPasswordValidation = [
