@@ -1,6 +1,19 @@
 const db = require('../config/db'); 
 const sendEmail = require('../utils/sendEmail');
 
+// Função auxiliar para marcar reservas passadas como Concluídas
+const autoCompleteBookings = async () => {
+    try {
+        const mysqlNow = new Date().toLocaleString('sv-SE', { timeZone: 'Europe/Lisbon', hour12: false }).replace('T', ' ');
+        await db.execute(
+            "UPDATE bookings SET status = 'completed' WHERE status = 'confirmed' AND end_time < ?",
+            [mysqlNow]
+        );
+    } catch (err) {
+        console.error("Erro ao auto-concluir reservas:", err);
+    }
+};
+
 // Criar nova reserva com validação de conflitos
 exports.createBooking = async (req, res) => {
     const { resource_id, start_time, end_time, guests, extra_resource_id } = req.body;
@@ -13,6 +26,23 @@ exports.createBooking = async (req, res) => {
     // Validar se data de fim é posterior à data de início
     if (new Date(start_time) >= new Date(end_time)) {
         return res.status(400).json({ message: "A data de fim deve ser posterior à data de início." });
+    }
+
+    // Validar se a duração da reserva não excede 1 mês
+    const start = new Date(start_time);
+    const end = new Date(end_time);
+    const maxEndDate = new Date(start);
+    maxEndDate.setMonth(maxEndDate.getMonth() + 1);
+    if (end > maxEndDate) {
+        return res.status(400).json({ message: "A duração da reserva não pode exceder o período máximo de 1 mês." });
+    }
+
+    // Validar se a antecedência não excede 1 mês no futuro
+    const agora = new Date();
+    const limiteFuturo = new Date(agora);
+    limiteFuturo.setMonth(limiteFuturo.getMonth() + 1);
+    if (start > limiteFuturo) {
+        return res.status(400).json({ message: "Não é possível criar reservas com mais de 1 mês de antecedência." });
     }
 
     let connection;
@@ -230,6 +260,8 @@ exports.getUserBookings = async (req, res) => {
 
     req.log.info(`Procurando reservas para o utilizador ID: ${user_id}`);
     try {
+        await autoCompleteBookings();
+        
         const query = `
             SELECT 
                 b.id AS booking_id, 
@@ -457,13 +489,13 @@ exports.endBookingEarly = async (req, res) => {
         );
 
         await connection.execute(
-            'UPDATE bookings SET end_time = ? WHERE id = ? OR parent_booking_id = ?',
+            "UPDATE bookings SET end_time = ?, status = 'completed' WHERE id = ? OR parent_booking_id = ?",
             [mysqlNow, booking_id, booking_id]
         );
 
         // REGISTAR NO HISTÓRICO
         const oldData = { resource_id: booking.resource_id, start_time: booking.start_time, end_time: booking.end_time, status: booking.status };
-        const newData = { ...oldData, end_time: mysqlNow };
+        const newData = { ...oldData, end_time: mysqlNow, status: 'completed' };
         
         await connection.execute(
             'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
@@ -473,7 +505,7 @@ exports.endBookingEarly = async (req, res) => {
         if (childBookings.length > 0) {
             const childId = childBookings[0].id;
             const childOldData = { resource_id: childBookings[0].resource_id, start_time: childBookings[0].start_time, end_time: childBookings[0].end_time, status: childBookings[0].status };
-            const childNewData = { ...childOldData, end_time: mysqlNow };
+            const childNewData = { ...childOldData, end_time: mysqlNow, status: 'completed' };
             await connection.execute(
                 'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
                 [childId, 'update', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
@@ -505,6 +537,23 @@ exports.updateBooking = async (req, res) => {
     // Validar se data de fim é posterior à data de início
     if (new Date(start_time) >= new Date(end_time)) {
         return res.status(400).json({ message: "A data de fim deve ser posterior à data de início." });
+    }
+
+    // Validar se a duração da reserva não excede 1 mês
+    const start = new Date(start_time);
+    const end = new Date(end_time);
+    const maxEndDate = new Date(start);
+    maxEndDate.setMonth(maxEndDate.getMonth() + 1);
+    if (end > maxEndDate) {
+        return res.status(400).json({ message: "A duração da reserva não pode exceder o período máximo de 1 mês." });
+    }
+
+    // Validar se a antecedência não excede 1 mês no futuro
+    const agora = new Date();
+    const limiteFuturo = new Date(agora);
+    limiteFuturo.setMonth(limiteFuturo.getMonth() + 1);
+    if (start > limiteFuturo) {
+        return res.status(400).json({ message: "Não é possível alterar reservas para uma data com mais de 1 mês de antecedência." });
     }
 
     let connection;
@@ -888,6 +937,8 @@ Equipa Reserva Office`;
 // Obter todas as reservas (Admin)
 exports.getAllBookings = async (req, res) => {
     try {
+        await autoCompleteBookings();
+        
         const query = `
             SELECT 
                 b.id AS booking_id, 

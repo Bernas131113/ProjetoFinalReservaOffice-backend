@@ -95,20 +95,34 @@ const obterOuCriarLocationId = async (building, floor) => {
     const buildingName = building || 'Edifício Principal';
     const floorStr = String(floor || 1);
     
-    // Procurar se já existe esta combinação de edifício e piso
+    // 1. Procurar o ID do escritório pelo nome
+    let officeId;
+    const [offices] = await db.execute('SELECT id FROM offices WHERE name = ?', [buildingName]);
+    if (offices.length > 0) {
+        officeId = offices[0].id;
+    } else {
+        // Se não existir, criamos o escritório
+        const [newOffice] = await db.execute(
+            'INSERT INTO offices (name, active) VALUES (?, ?)',
+            [buildingName, true]
+        );
+        officeId = newOffice.insertId;
+    }
+
+    // 2. Procurar se já existe esta combinação de office_id e floor na tabela locations
     const [existing] = await db.execute(
-        'SELECT id FROM locations WHERE building = ? AND floor = ?',
-        [buildingName, floorStr]
+        'SELECT id FROM locations WHERE office_id = ? AND floor = ?',
+        [officeId, floorStr]
     );
     
     if (existing.length > 0) {
         return existing[0].id;
     }
     
-    // Se não existir, criamos a localização
+    // 3. Se não existir, criamos a localização
     const [result] = await db.execute(
-        'INSERT INTO locations (building, floor) VALUES (?, ?)',
-        [buildingName, floorStr]
+        'INSERT INTO locations (office_id, floor, active) VALUES (?, ?, ?)',
+        [officeId, floorStr, true]
     );
     return result.insertId;
 };
