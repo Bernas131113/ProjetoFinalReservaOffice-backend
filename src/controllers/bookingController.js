@@ -1,5 +1,6 @@
 const db = require('../config/db'); 
 const sendEmail = require('../utils/sendEmail');
+const crypto = require('crypto');
 
 // Função auxiliar para marcar reservas passadas como Concluídas
 const autoCompleteBookings = async () => {
@@ -16,7 +17,7 @@ const autoCompleteBookings = async () => {
 
 // Criar nova reserva com validação de conflitos
 exports.createBooking = async (req, res) => {
-    const { resource_id, start_time, end_time, guests, extra_resource_id } = req.body;
+    const { resource_id, start_time, end_time, guests, extra_resource_id, recurrence } = req.body;
     const user_id = req.user.id;
 
     if (!resource_id || !start_time || !end_time) {
@@ -43,6 +44,49 @@ exports.createBooking = async (req, res) => {
     limiteFuturo.setMonth(limiteFuturo.getMonth() + 1);
     if (start > limiteFuturo) {
         return res.status(400).json({ message: "Não é possível criar reservas com mais de 1 mês de antecedência." });
+    }
+
+    // Gerar as ocorrências
+    const ocorrencias = [];
+    ocorrencias.push({ start_time, end_time });
+
+    if (recurrence && recurrence.type && recurrence.endDate) {
+        if (!['daily', 'weekly'].includes(recurrence.type)) {
+            return res.status(400).json({ message: "O tipo de recorrência deve ser 'daily' ou 'weekly'." });
+        }
+        
+        let currentStart = new Date(start_time);
+        let currentEnd = new Date(end_time);
+        const limitDate = new Date(recurrence.endDate);
+        
+        // Limitar a data de fim de recorrência a no máximo 1 mês de antecedência
+        if (limitDate > limiteFuturo) {
+            return res.status(400).json({ message: "A data limite de recorrência não pode exceder o limite de 1 mês no futuro." });
+        }
+        
+        while (true) {
+            if (recurrence.type === 'daily') {
+                currentStart.setDate(currentStart.getDate() + 1);
+                currentEnd.setDate(currentEnd.getDate() + 1);
+            } else if (recurrence.type === 'weekly') {
+                currentStart.setDate(currentStart.getDate() + 7);
+                currentEnd.setDate(currentEnd.getDate() + 7);
+            }
+            
+            if (currentStart > limitDate) {
+                break;
+            }
+            
+            // Converter de volta para formato de string ISO
+            ocorrencias.push({
+                start_time: currentStart.toLocaleString('sv-SE', { timeZone: 'Europe/Lisbon', hour12: false }).replace('T', ' '),
+                end_time: currentEnd.toLocaleString('sv-SE', { timeZone: 'Europe/Lisbon', hour12: false }).replace('T', ' ')
+            });
+        }
+
+        if (ocorrencias.length > 30) {
+            return res.status(400).json({ message: "O número máximo de ocorrências recorrentes permitidas é 30." });
+        }
     }
 
     let connection;
@@ -88,13 +132,15 @@ exports.createBooking = async (req, res) => {
             FOR UPDATE
         `;
         
-        const [reservasConflituosas] = await connection.execute(queryVerificacao, [resource_id, end_time, start_time]);
-
-        if (reservasConflituosas.length > 0) {
-            await connection.rollback();
-            return res.status(400).json({ 
-                message: "Lamentamos, mas este recurso já se encontra reservado para o horário selecionado." 
-            });
+        for (const ocorrencia of ocorrencias) {
+            const [reservasConflituosas] = await connection.execute(queryVerificacao, [resource_id, ocorrencia.end_time, ocorrencia.start_time]);
+            if (reservasConflituosas.length > 0) {
+                await connection.rollback();
+                const dataFormatada = new Date(ocorrencia.start_time).toLocaleDateString('pt-PT');
+                return res.status(400).json({ 
+                    message: `Lamentamos, mas este recurso já se encontra reservado no dia ${dataFormatada} para o horário selecionado.` 
+                });
+            }
         }
 
         // 3.1 VERIFICAR MONITOR EXTRA SE ENVIADO
@@ -121,47 +167,26 @@ exports.createBooking = async (req, res) => {
                 return res.status(400).json({ message: "O recurso extra selecionado deve ser um monitor." });
             }
             
-            // Verificar conflitos do monitor extra
-            const [extraConflitos] = await connection.execute(queryVerificacao, [extra_resource_id, end_time, start_time]);
-            if (extraConflitos.length > 0) {
-                await connection.rollback();
-                return res.status(400).json({
-                    message: "Lamentamos, mas o monitor extra selecionado já se encontra reservado para o horário."
-                });
+            // Verificar conflitos do monitor extra para cada ocorrência
+            for (const ocorrencia of ocorrencias) {
+                const [extraConflitos] = await connection.execute(queryVerificacao, [extra_resource_id, ocorrencia.end_time, ocorrencia.start_time]);
+                if (extraConflitos.length > 0) {
+                    await connection.rollback();
+                    const dataFormatada = new Date(ocorrencia.start_time).toLocaleDateString('pt-PT');
+                    return res.status(400).json({
+                        message: `Lamentamos, mas o monitor extra selecionado já se encontra reservado no dia ${dataFormatada} para o horário.`
+                    });
+                }
             }
             hasExtra = true;
         }
         
-        // 4. INSERIR A RESERVA PRINCIPAL
-        const [result] = await connection.execute(
-            'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status) VALUES (?, ?, ?, ?, ?)',
-            [user_id, resource_id, start_time, end_time, 'confirmed']
-        );
-        const mainBookingId = result.insertId;
-
-        // 4.1 REGISTAR NO HISTÓRICO (Auditoria)
-        const newBookingData = { resource_id, start_time, end_time, status: 'confirmed' };
-        await connection.execute(
-            'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
-            [mainBookingId, 'create', JSON.stringify(newBookingData), user_id]
-        );
-
-        // 4.2 INSERIR MONITOR EXTRA SE APLICÁVEL
-        if (hasExtra) {
-            const [extraResult] = await connection.execute(
-                'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id) VALUES (?, ?, ?, ?, ?, ?)',
-                [user_id, extra_resource_id, start_time, end_time, 'confirmed', mainBookingId]
-            );
-            
-            const extraBookingData = { resource_id: extra_resource_id, start_time, end_time, status: 'confirmed', parent_booking_id: mainBookingId };
-            await connection.execute(
-                'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
-                [extraResult.insertId, 'create', JSON.stringify(extraBookingData), user_id]
-            );
-        }
-
-        // 4.3 PROCESSAR CONVIDADOS SE FOR SALA
+        // 4. CRIAR AS RESERVAS
+        const recurrence_group_id = ocorrencias.length > 1 ? crypto.randomUUID() : null;
+        const mainBookingIds = [];
         let guestDetails = [];
+
+        // Extrair convidados se for sala
         if (resource_type === 'room' && guests && Array.isArray(guests)) {
             const cleanGuests = [...new Set(guests.map(e => e.trim().toLowerCase()).filter(Boolean))];
             for (const email of cleanGuests) {
@@ -169,24 +194,53 @@ exports.createBooking = async (req, res) => {
                     'SELECT id, name FROM users WHERE email = ?',
                     [email]
                 );
-
                 let guestUserId = null;
                 let guestName = null;
                 if (existingUsers.length > 0) {
                     guestUserId = existingUsers[0].id;
                     guestName = existingUsers[0].name;
                 }
+                guestDetails.push({ email, name: guestName, user_id: guestUserId });
+            }
+        }
 
-                await connection.execute(
-                    'INSERT INTO booking_guests (booking_id, user_id, email, name, status) VALUES (?, ?, ?, ?, ?)',
-                    [mainBookingId, guestUserId, email, guestName, 'pending']
+        for (const ocorrencia of ocorrencias) {
+            const [result] = await connection.execute(
+                'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, recurrence_group_id) VALUES (?, ?, ?, ?, ?, ?)',
+                [user_id, resource_id, ocorrencia.start_time, ocorrencia.end_time, 'confirmed', recurrence_group_id]
+            );
+            const mainBookingId = result.insertId;
+            mainBookingIds.push(mainBookingId);
+
+            // 4.1 REGISTAR NO HISTÓRICO (Auditoria)
+            const newBookingData = { resource_id, start_time: ocorrencia.start_time, end_time: ocorrencia.end_time, status: 'confirmed', recurrence_group_id };
+            await connection.execute(
+                'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
+                [mainBookingId, 'create', JSON.stringify(newBookingData), user_id]
+            );
+
+            // 4.2 INSERIR MONITOR EXTRA SE APLICÁVEL
+            if (hasExtra) {
+                const [extraResult] = await connection.execute(
+                    'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id, recurrence_group_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    [user_id, extra_resource_id, ocorrencia.start_time, ocorrencia.end_time, 'confirmed', mainBookingId, recurrence_group_id]
                 );
+                
+                const extraBookingData = { resource_id: extra_resource_id, start_time: ocorrencia.start_time, end_time: ocorrencia.end_time, status: 'confirmed', parent_booking_id: mainBookingId, recurrence_group_id };
+                await connection.execute(
+                    'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
+                    [extraResult.insertId, 'create', JSON.stringify(extraBookingData), user_id]
+                );
+            }
 
-                guestDetails.push({
-                    email,
-                    name: guestName,
-                    user_id: guestUserId
-                });
+            // 4.3 PROCESSAR CONVIDADOS SE FOR SALA
+            if (resource_type === 'room' && guestDetails.length > 0) {
+                for (const guest of guestDetails) {
+                    await connection.execute(
+                        'INSERT INTO booking_guests (booking_id, user_id, email, name, status) VALUES (?, ?, ?, ?, ?)',
+                        [mainBookingId, guest.user_id, guest.email, guest.name, 'pending']
+                    );
+                }
             }
         }
 
@@ -207,9 +261,15 @@ exports.createBooking = async (req, res) => {
                     const dataInicioStr = formatarData(start_time);
                     const dataFimStr = formatarData(end_time);
                     const local = `${recursos[0].resource_name} (${recursos[0].office_name || 'Escritório'} - Piso ${recursos[0].floor || 1})`;
+                    
+                    let recText = '';
+                    if (recurrence && recurrence.type) {
+                        const freqLabel = recurrence.type === 'daily' ? 'diário' : 'semanal';
+                        recText = `\nRecorrência: Reunião recorrente com padrão ${freqLabel} até ${formatarData(recurrence.endDate).split(' ')[0]}`;
+                    }
 
                     guestDetails.forEach(guest => {
-                        const subject = `Convite: Reunião em ${recursos[0].resource_name} - ${dataInicioStr.split(' ')[0]}`;
+                        const subject = `Convite: Reunião em ${recursos[0].resource_name} - ${dataInicioStr.split(' ')[0]} ${recurrence ? '(Recorrente)' : ''}`;
                         const message = `Olá${guest.name ? ' ' + guest.name : ''},
 
 ${organizadorNome} convidou-o para uma reunião.
@@ -217,8 +277,8 @@ ${organizadorNome} convidou-o para uma reunião.
 Detalhes do Evento:
 --------------------------------------------------
 Local: ${local}
-Início: ${dataInicioStr}
-Fim: ${dataFimStr}
+Início (1ª ocorrência): ${dataInicioStr}
+Fim (1ª ocorrência): ${dataFimStr}${recText}
 --------------------------------------------------
 
 Por favor, compareça no horário indicado.
@@ -242,7 +302,7 @@ Equipa Reserva Office`;
 
         return res.status(201).json({ 
             message: "Reserva efetuada com sucesso!", 
-            booking_id: mainBookingId 
+            booking_id: mainBookingIds[0]
         });
 
     } catch (error) {
@@ -269,6 +329,7 @@ exports.getUserBookings = async (req, res) => {
                 b.start_time, 
                 b.end_time, 
                 b.status, 
+                b.recurrence_group_id,
                 r.name AS resource_name, 
                 rt.name AS resource_type
             FROM bookings b
@@ -353,35 +414,62 @@ exports.cancelBooking = async (req, res) => {
             return res.status(400).json({ message: "Esta reserva já está cancelada." });
         }
 
-        // Cancelar a reserva principal e a filho (se existir)
-        await connection.execute(
-            "UPDATE bookings SET status = ? WHERE id = ? OR parent_booking_id = ?",
-            ['cancelled', booking_id, booking_id]
-        );
+        const scope = req.query.scope;
+        const isSeries = scope === 'series' && oldBooking.recurrence_group_id;
 
-        // REGISTAR NO HISTÓRICO DA PRINCIPAL
-        const oldData = { resource_id: oldBooking.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: oldBooking.status };
-        const newData = { ...oldData, status: 'cancelled' };
-        
-        await connection.execute(
-            'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
-            [booking_id, 'cancel', JSON.stringify(oldData), JSON.stringify(newData), user_id]
-        );
+        if (isSeries) {
+            // Obter todas as reservas confirmadas desta série para auditoria e histórico
+            const [seriesBookings] = await connection.execute(
+                "SELECT id, resource_id, start_time, end_time, status FROM bookings WHERE recurrence_group_id = ? AND status = 'confirmed' FOR UPDATE",
+                [oldBooking.recurrence_group_id]
+            );
 
-        // REGISTAR NO HISTÓRICO DA SECUNDÁRIA (se existir)
-        const [childBookings] = await connection.execute(
-            "SELECT id, resource_id, start_time, end_time, status FROM bookings WHERE parent_booking_id = ? AND status = 'confirmed' FOR UPDATE",
-            [booking_id]
-        );
+            // Atualizar status de todas para cancelled
+            await connection.execute(
+                "UPDATE bookings SET status = 'cancelled' WHERE recurrence_group_id = ? AND status = 'confirmed'",
+                [oldBooking.recurrence_group_id]
+            );
 
-        if (childBookings.length > 0) {
-            const childId = childBookings[0].id;
-            const childOldData = { resource_id: childBookings[0].resource_id, start_time: childBookings[0].start_time, end_time: childBookings[0].end_time, status: childBookings[0].status };
-            const childNewData = { ...childOldData, status: 'cancelled' };
+            // Registar no histórico de cada uma
+            for (const b of seriesBookings) {
+                const oldData = { resource_id: b.resource_id, start_time: b.start_time, end_time: b.end_time, status: b.status };
+                const newData = { ...oldData, status: 'cancelled' };
+                await connection.execute(
+                    'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
+                    [b.id, 'cancel', JSON.stringify(oldData), JSON.stringify(newData), user_id]
+                );
+            }
+        } else {
+            // Cancelar a reserva principal e a filho (se existir)
+            await connection.execute(
+                "UPDATE bookings SET status = ? WHERE id = ? OR parent_booking_id = ?",
+                ['cancelled', booking_id, booking_id]
+            );
+
+            // REGISTAR NO HISTÓRICO DA PRINCIPAL
+            const oldData = { resource_id: oldBooking.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: oldBooking.status };
+            const newData = { ...oldData, status: 'cancelled' };
+            
             await connection.execute(
                 'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
-                [childId, 'cancel', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
+                [booking_id, 'cancel', JSON.stringify(oldData), JSON.stringify(newData), user_id]
             );
+
+            // REGISTAR NO HISTÓRICO DA SECUNDÁRIA (se existir)
+            const [childBookings] = await connection.execute(
+                "SELECT id, resource_id, start_time, end_time, status FROM bookings WHERE parent_booking_id = ? AND status = 'confirmed' FOR UPDATE",
+                [booking_id]
+            );
+
+            if (childBookings.length > 0) {
+                const childId = childBookings[0].id;
+                const childOldData = { resource_id: childBookings[0].resource_id, start_time: childBookings[0].start_time, end_time: childBookings[0].end_time, status: childBookings[0].status };
+                const childNewData = { ...childOldData, status: 'cancelled' };
+                await connection.execute(
+                    'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
+                    [childId, 'cancel', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
+                );
+            }
         }
 
         // Obter lista de convidados se for uma sala
@@ -410,12 +498,13 @@ exports.cancelBooking = async (req, res) => {
                     const dataInicioStr = formatarData(oldBooking.start_time);
                     const dataFimStr = formatarData(oldBooking.end_time);
                     const local = `${oldBooking.resource_name} (${oldBooking.office_name || 'Escritório'} - Piso ${oldBooking.floor || 1})`;
+                    const isSeriesText = isSeries ? ' (e toda a sua série recorrente)' : '';
 
                     guestsToNotify.forEach(guest => {
-                        const subject = `Cancelamento: Reunião em ${oldBooking.resource_name} - ${dataInicioStr.split(' ')[0]}`;
+                        const subject = `Cancelamento: Reunião em ${oldBooking.resource_name} - ${dataInicioStr.split(' ')[0]} ${isSeries ? '(Recorrente)' : ''}`;
                         const message = `Olá${guest.name ? ' ' + guest.name : ''},
 
-A reunião agendada por ${organizadorNome} foi cancelada.
+A reunião agendada por ${organizadorNome} foi cancelada${isSeriesText}.
 
 Detalhes do Evento Cancelado:
 --------------------------------------------------
@@ -945,6 +1034,7 @@ exports.getAllBookings = async (req, res) => {
                 b.start_time, 
                 b.end_time, 
                 b.status, 
+                b.recurrence_group_id,
                 u.name AS user_name,
                 u.email AS user_email,
                 r.name AS resource_name, 

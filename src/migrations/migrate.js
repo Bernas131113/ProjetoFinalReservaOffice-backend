@@ -437,6 +437,17 @@ try {
             console.error('Erro ao adicionar parent_booking_id:', e.message);
         }
 
+        // 9.1.5 Adicionar recurrence_group_id à tabela bookings
+        try {
+            const [cols] = await connection.query("SHOW COLUMNS FROM bookings LIKE 'recurrence_group_id'");
+            if (cols.length === 0) {
+                await connection.query("ALTER TABLE bookings ADD COLUMN recurrence_group_id VARCHAR(36) NULL");
+                console.log('Coluna recurrence_group_id adicionada à tabela bookings.');
+            }
+        } catch (e) {
+            console.error('Erro ao adicionar recurrence_group_id:', e.message);
+        }
+
         // 9.2 Adicionar role 'tecnico' às roles
         try {
             await connection.query("INSERT IGNORE INTO user_roles (name, label) VALUES ('tecnico', 'Técnico')");
