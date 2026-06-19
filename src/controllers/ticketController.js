@@ -24,17 +24,47 @@ exports.createTicket = async (req, res) => {
             await cancelarReservasENotificar(resource_id, 'maintenance');
         }
 
-        // Notificar técnicos por email (se houver técnicos registados)
+        // Notificar técnicos por email apenas do escritório base da avaria
         try {
-            const [techs] = await db.execute(
-                "SELECT u.email, u.name FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = 'tecnico'"
-            );
+            let ticketOfficeId = null;
+            if (resource_id) {
+                const [resOffice] = await db.execute(
+                    "SELECT l.office_id FROM resources r JOIN locations l ON r.location_id = l.id WHERE r.id = ?",
+                    [resource_id]
+                );
+                if (resOffice.length > 0) {
+                    ticketOfficeId = resOffice[0].office_id;
+                }
+            }
+
+            if (!ticketOfficeId) {
+                const [userOffice] = await db.execute(
+                    "SELECT home_office_id FROM users WHERE id = ?",
+                    [reported_by]
+                );
+                if (userOffice.length > 0) {
+                    ticketOfficeId = userOffice[0].home_office_id;
+                }
+            }
+
+            let techs = [];
+            if (ticketOfficeId) {
+                [techs] = await db.execute(
+                    "SELECT u.email, u.name FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = 'tecnico' AND u.home_office_id = ?",
+                    [ticketOfficeId]
+                );
+            } else {
+                // Fallback se não for possível determinar o escritório: notificar todos
+                [techs] = await db.execute(
+                    "SELECT u.email, u.name FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = 'tecnico'"
+                );
+            }
 
             for (const tech of techs) {
                 await sendEmail({
                     email: tech.email,
                     subject: `[Ticket #${ticketId}] Nova Avaria Reportada - Urgência ${urgency || 'Média'}`,
-                    message: `Olá ${tech.name},\n\nFoi reportado um novo problema:\n\nTítulo: ${title}\nDescrição: ${description}\nUrgência: ${urgency || 'medium'}\n\nPor favor, aceda ao painel de tickets para gerir esta avaria.\n\nObrigado,\nEquipa Reserva Office`,
+                    message: `Olá ${tech.name},\n\nFoi reportado um novo problema no teu escritório base:\n\nTítulo: ${title}\nDescrição: ${description}\nUrgência: ${urgency || 'medium'}\n\nPor favor, aceda ao painel de tickets para gerir esta avaria.\n\nObrigado,\nEquipa Reserva Office`,
                     email_type: 'new_ticket'
                 });
             }
