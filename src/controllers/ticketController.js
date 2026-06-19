@@ -24,17 +24,47 @@ exports.createTicket = async (req, res) => {
             await cancelarReservasENotificar(resource_id, 'maintenance');
         }
 
-        // Notificar técnicos por email (se houver técnicos registados)
+        // Notificar técnicos por email apenas do escritório base da avaria
         try {
-            const [techs] = await db.execute(
-                "SELECT u.email, u.name FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = 'tecnico'"
-            );
+            let ticketOfficeId = null;
+            if (resource_id) {
+                const [resOffice] = await db.execute(
+                    "SELECT l.office_id FROM resources r JOIN locations l ON r.location_id = l.id WHERE r.id = ?",
+                    [resource_id]
+                );
+                if (resOffice.length > 0) {
+                    ticketOfficeId = resOffice[0].office_id;
+                }
+            }
+
+            if (!ticketOfficeId) {
+                const [userOffice] = await db.execute(
+                    "SELECT home_office_id FROM users WHERE id = ?",
+                    [reported_by]
+                );
+                if (userOffice.length > 0) {
+                    ticketOfficeId = userOffice[0].home_office_id;
+                }
+            }
+
+            let techs = [];
+            if (ticketOfficeId) {
+                [techs] = await db.execute(
+                    "SELECT u.email, u.name FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = 'tecnico' AND u.home_office_id = ?",
+                    [ticketOfficeId]
+                );
+            } else {
+                // Fallback se não for possível determinar o escritório: notificar todos
+                [techs] = await db.execute(
+                    "SELECT u.email, u.name FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = 'tecnico'"
+                );
+            }
 
             for (const tech of techs) {
                 await sendEmail({
                     email: tech.email,
                     subject: `[Ticket #${ticketId}] Nova Avaria Reportada - Urgência ${urgency || 'Média'}`,
-                    message: `Olá ${tech.name},\n\nFoi reportado um novo problema:\n\nTítulo: ${title}\nDescrição: ${description}\nUrgência: ${urgency || 'medium'}\n\nPor favor, aceda ao painel de tickets para gerir esta avaria.\n\nObrigado,\nEquipa Reserva Office`,
+                    message: `Olá ${tech.name},\n\nFoi reportado um novo problema no teu escritório base:\n\nTítulo: ${title}\nDescrição: ${description}\nUrgência: ${urgency || 'medium'}\n\nPor favor, aceda ao painel de tickets para gerir esta avaria.\n\nObrigado,\nEquipa Reserva Office`,
                     email_type: 'new_ticket'
                 });
             }
@@ -49,7 +79,7 @@ exports.createTicket = async (req, res) => {
     }
 };
 
-// 2. Listar Tickets (Técnico/Admin vê todos, Utilizador vê apenas os seus)
+// 2. Listar Tickets (Técnico vê apenas do seu escritório, Admin vê todos, Utilizador vê apenas os seus)
 exports.listTickets = async (req, res) => {
     const { status, urgency } = req.query;
     const userId = req.user.id;
@@ -78,6 +108,14 @@ exports.listTickets = async (req, res) => {
         if (userRole !== 'admin' && userRole !== 'tecnico') {
             conditions.push('t.reported_by = ?');
             params.push(userId);
+        } else if (userRole === 'tecnico') {
+            // Técnicos filtram por seu home_office_id se estiver definido
+            const [userRow] = await db.execute('SELECT home_office_id FROM users WHERE id = ?', [userId]);
+            if (userRow.length > 0 && userRow[0].home_office_id !== null) {
+                const techOfficeId = userRow[0].home_office_id;
+                conditions.push('(l.office_id = ? OR (r.id IS NULL AND u1.home_office_id = ?))');
+                params.push(techOfficeId, techOfficeId);
+            }
         }
 
         // Filtros opcionais de query
@@ -113,11 +151,14 @@ exports.getTicketById = async (req, res) => {
     try {
         const query = `
             SELECT t.*, u1.name as reporter_name, u1.email as reporter_email,
-                   u2.name as assignee_name, r.name as resource_name
+                   u1.home_office_id as reporter_office_id,
+                   u2.name as assignee_name, r.name as resource_name,
+                   l.office_id as resource_office_id
             FROM tickets t
             LEFT JOIN users u1 ON t.reported_by = u1.id
             LEFT JOIN users u2 ON t.assigned_to = u2.id
             LEFT JOIN resources r ON t.resource_id = r.id
+            LEFT JOIN locations l ON r.location_id = l.id
             WHERE t.id = ?
         `;
         const [tickets] = await db.execute(query, [id]);
@@ -129,8 +170,18 @@ exports.getTicketById = async (req, res) => {
         const ticket = tickets[0];
 
         // Restrição de segurança
-        if (userRole !== 'admin' && userRole !== 'tecnico' && ticket.reported_by !== userId) {
-            return res.status(403).json({ message: "Não tem permissões para ver este ticket." });
+        if (userRole !== 'admin' && ticket.reported_by !== userId) {
+            if (userRole === 'tecnico') {
+                const [userRow] = await db.execute('SELECT home_office_id FROM users WHERE id = ?', [userId]);
+                const techOfficeId = userRow.length > 0 ? userRow[0].home_office_id : null;
+                const ticketOfficeId = ticket.resource_office_id || ticket.reporter_office_id;
+                
+                if (techOfficeId && ticketOfficeId && techOfficeId !== ticketOfficeId) {
+                    return res.status(403).json({ message: "Não tem permissões para aceder a avarias de outro edifício." });
+                }
+            } else {
+                return res.status(403).json({ message: "Não tem permissões para ver este ticket." });
+            }
         }
 
         res.status(200).json(ticket);
