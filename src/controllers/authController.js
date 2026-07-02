@@ -31,20 +31,20 @@ exports.login = async (req, res) => {
 
 
         const accessToken = jwt.sign(
-            { id: user.id, role: user.role, version: user.token_version }, 
-            process.env.JWT_SECRET, 
+            { id: user.id, role: user.role, version: user.token_version },
+            process.env.JWT_SECRET,
             { expiresIn: '15m' }
         );
 
-       
+
         const refreshToken = jwt.sign(
-            { id: user.id, version: user.token_version }, 
-            process.env.JWT_REFRESH_SECRET, 
+            { id: user.id, version: user.token_version },
+            process.env.JWT_REFRESH_SECRET,
             { expiresIn: '7d' }
         );
 
         const hashedRefreshToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
-        
+
         // Data de expiração para a BD (7 dias)
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 7);
@@ -52,11 +52,11 @@ exports.login = async (req, res) => {
 
         // Guardar na tabela refresh_tokens em vez de diretamente no user
         await db.execute(
-            'INSERT INTO refresh_tokens (user_id, token_hash, device_info, expires_at) VALUES (?, ?, ?, ?)', 
+            'INSERT INTO refresh_tokens (user_id, token_hash, device_info, expires_at) VALUES (?, ?, ?, ?)',
             [user.id, hashedRefreshToken, req.headers['user-agent'] || 'Desconhecido', mysqlExpiresAt]
         );
 
-       
+
         res.json({
             message: 'Login com sucesso',
             accessToken,
@@ -69,7 +69,7 @@ exports.login = async (req, res) => {
     }
 };
 exports.refreshToken = async (req, res) => {
-    
+
     const { refreshToken } = req.body;
 
     if (!refreshToken) {
@@ -77,16 +77,16 @@ exports.refreshToken = async (req, res) => {
     }
 
     try {
-    
+
         const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
         const hashedRefreshToken = crypto.createHash('sha256').update(refreshToken).digest('hex');
-        
+
         // Verificar se o token existe na tabela e não expirou
         const [tokens] = await db.execute(
-            'SELECT t.user_id, u.role, u.token_version FROM refresh_tokens t JOIN users u ON t.user_id = u.id WHERE t.token_hash = ? AND t.expires_at > NOW()', 
+            'SELECT t.user_id, u.role, u.token_version FROM refresh_tokens t JOIN users u ON t.user_id = u.id WHERE t.token_hash = ? AND t.expires_at > NOW()',
             [hashedRefreshToken]
         );
-        
+
         if (tokens.length === 0) {
             return res.status(403).json({ message: 'Refresh Token inválido, expirado ou revogado.' });
         }
@@ -99,10 +99,10 @@ exports.refreshToken = async (req, res) => {
             return res.status(403).json({ message: 'Sessão invalidada. Por favor, faz login novamente.' });
         }
 
-  
+
         const newAccessToken = jwt.sign(
-            { id: user.user_id, role: user.role, version: user.token_version }, 
-            process.env.JWT_SECRET, 
+            { id: user.user_id, role: user.role, version: user.token_version },
+            process.env.JWT_SECRET,
             { expiresIn: '15m' }
         );
 
@@ -115,7 +115,7 @@ exports.refreshToken = async (req, res) => {
 };
 
 exports.logout = async (req, res) => {
-    const { id } = req.user; 
+    const { id } = req.user;
     const { refreshToken } = req.body;
 
     try {
@@ -185,21 +185,21 @@ exports.register = async (req, res) => {
 
     // 3. Validação de Password Forte
     if (!validatePassword(password)) {
-        return res.status(400).json({ 
-            message: "A password deve ter pelo menos 8 caracteres, incluindo uma letra maiúscula, uma minúscula e um número." 
+        return res.status(400).json({
+            message: "A password deve ter pelo menos 8 caracteres, incluindo uma letra maiúscula, uma minúscula e um número."
         });
     }
 
     try {
         const [existingUsers] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
-        
+
         if (existingUsers.length > 0) {
             return res.status(400).json({ message: "Este email já se encontra registado." });
         }
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
-        
+
         // Obter o ID do cargo 'user'
         const [roles] = await db.execute('SELECT id FROM user_roles WHERE name = ?', ['user']);
         const roleId = roles[0].id;
@@ -209,9 +209,9 @@ exports.register = async (req, res) => {
             [name.trim(), email, hashedPassword, roleId, home_office_id || null]
         );
 
-        return res.status(201).json({ 
-            message: "Utilizador criado com sucesso!", 
-            userId: result.insertId 
+        return res.status(201).json({
+            message: "Utilizador criado com sucesso!",
+            userId: result.insertId
         });
 
     } catch (error) {
@@ -228,16 +228,16 @@ exports.forgotPassword = async (req, res) => {
         // Verificar se o utilizador existe
         const [users] = await db.execute('SELECT id, email FROM users WHERE email = ?', [email]);
         if (users.length === 0) {
-        return res.status(200).json({ message: 'Email de recuperação enviado! Verifica a tua caixa de correio.' });
+            return res.status(200).json({ message: 'Email de recuperação enviado! Verifica a tua caixa de correio.' });
         }
         const user = users[0];
 
         // Gerar um token aleatório e seguro
         const resetToken = crypto.randomBytes(32).toString('hex');
-        
+
         // Encriptar o token para guardar na BD (para maior segurança)
         const resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
-        
+
         // Definir a validade para daqui a 1 hora
         const expireDate = new Date();
         expireDate.setHours(expireDate.getHours() + 1);
@@ -254,7 +254,7 @@ exports.forgotPassword = async (req, res) => {
         const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`;
         const message = `Esqueceste-te da password?\n\nClica neste link para redefinir a tua password (válido por 1 hora):\n${resetUrl}\n\nSe não pediste a alteração, podes ignorar este email de forma segura.`;
 
-        
+
         try {
             await sendEmail({
                 email: user.email,
@@ -266,7 +266,7 @@ exports.forgotPassword = async (req, res) => {
             res.status(200).json({ message: 'Email de recuperação enviado! Verifica a tua caixa de correio.' });
         } catch (emailError) {
             console.error('Erro a enviar email:', emailError);
-            
+
             await db.execute('UPDATE users SET reset_password_token = NULL, reset_password_expires = NULL WHERE id = ?', [user.id]);
             return res.status(500).json({ message: 'Erro ao enviar o email. Tenta novamente mais tarde.' });
         }
@@ -280,43 +280,43 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
     const { token, newPassword } = req.body;
-    
+
     if (!token || !newPassword) {
         return res.status(400).json({ message: 'Token e nova password são obrigatórios.' });
     }
 
     // Validação de Password Forte
     if (!validatePassword(newPassword)) {
-        return res.status(400).json({ 
-            message: "A password deve ter pelo menos 8 caracteres, incluindo uma letra maiúscula, uma minúscula e um número." 
+        return res.status(400).json({
+            message: "A password deve ter pelo menos 8 caracteres, incluindo uma letra maiúscula, uma minúscula e um número."
         });
     }
 
     try {
-       
+
         const resetPasswordToken = crypto.createHash('sha256').update(token).digest('hex');
 
-        
+
         const [users] = await db.execute('SELECT id, reset_password_expires FROM users WHERE reset_password_token = ?', [resetPasswordToken]);
-        
+
         if (users.length === 0) {
             return res.status(400).json({ message: 'Token inválido.' });
         }
 
         const user = users[0];
 
-        
+
         const now = new Date();
         const expireDate = new Date(user.reset_password_expires);
         if (now > expireDate) {
             return res.status(400).json({ message: 'O link expirou. Por favor, pede uma nova recuperação de password.' });
         }
 
-        
+
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(newPassword, salt);
 
-        
+
         await db.execute(
             'UPDATE users SET password_hash = ?, reset_password_token = NULL, reset_password_expires = NULL WHERE id = ?',
             [hashedPassword, user.id]
@@ -407,7 +407,7 @@ exports.deleteUser = async (req, res) => {
             WHERE u.id = ?
         `;
         const [userToDelete] = await db.execute(query, [id]);
-        
+
         if (userToDelete.length === 0) {
             return res.status(404).json({ message: 'Utilizador não encontrado.' });
         }
@@ -415,10 +415,10 @@ exports.deleteUser = async (req, res) => {
         // 3. Se for um administrador, garantir que não é o único no sistema
         if (userToDelete[0].role === 'admin') {
             const [adminCount] = await db.execute(
-                'SELECT COUNT(*) as total FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = ?', 
+                'SELECT COUNT(*) as total FROM users u JOIN user_roles ur ON u.role_id = ur.id WHERE ur.name = ?',
                 ['admin']
             );
-            
+
             if (adminCount[0].total <= 1) {
                 return res.status(400).json({ message: 'Não é possível eliminar o único administrador do sistema.' });
             }
@@ -466,6 +466,10 @@ exports.submitRegistrationRequest = async (req, res) => {
 
     if (!name || !name.trim() || !email) {
         return res.status(400).json({ message: 'Nome e email são obrigatórios.' });
+    }
+
+    if (!validateEmail(email)) {
+        return res.status(400).json({ message: 'O formato do email é inválido.' });
     }
 
     try {
@@ -555,7 +559,7 @@ exports.resolveRegistrationRequest = async (req, res) => {
                 [id]
             );
 
-            res.json({ 
+            res.json({
                 message: 'Pedido aprovado com sucesso! Utilizador criado.',
                 tempPassword
             });
