@@ -57,7 +57,7 @@ const runMigrations = async () => {
                 )
             `);
             console.log('Tabela refresh_tokens verificada/criada.');
-        } catch (e) { 
+        } catch (e) {
             console.error('Erro ao criar tabela refresh_tokens:', e.message);
         }
 
@@ -84,13 +84,13 @@ const runMigrations = async () => {
                 if (cols.length > 0 && cols[0].Null === 'NO') {
                     console.log('Atualizando booking_history para permitir changed_by NULL (correção de DELETE)...');
                     await connection.query('ALTER TABLE booking_history MODIFY COLUMN changed_by INT NULL');
-                    
+
                     try {
                         await connection.query('ALTER TABLE booking_history DROP FOREIGN KEY booking_history_ibfk_2');
                     } catch (dropErr) {
                         // FK pode ter outro nome ou já não existir
                     }
-                    
+
                     try {
                         await connection.query('ALTER TABLE booking_history ADD CONSTRAINT booking_history_ibfk_2 FOREIGN KEY (changed_by) REFERENCES users(id) ON DELETE SET NULL');
                     } catch (addErr) {
@@ -116,7 +116,7 @@ const runMigrations = async () => {
                 )
             `);
             console.log('Tabela resource_types verificada.');
-            
+
             // Inserir valores padrão e novos tipos usando INSERT IGNORE
             const tiposRecursos = [
                 { name: 'desk', label: 'Mesa de Trabalho' },
@@ -176,39 +176,39 @@ const runMigrations = async () => {
                 console.log('Migração de resources.type concluída.');
             }
         } catch (e) { console.error('Erro na migração de resources.type:', e.message); }
-// Migração de users.role (ENUM -> FK)
-try {
-    const [cols] = await connection.query("SHOW COLUMNS FROM users LIKE 'role_id'");
-    if (cols.length === 0) {
-        await connection.query("ALTER TABLE users ADD COLUMN role_id INT NULL");
-    }
+        // Migração de users.role (ENUM -> FK)
+        try {
+            const [cols] = await connection.query("SHOW COLUMNS FROM users LIKE 'role_id'");
+            if (cols.length === 0) {
+                await connection.query("ALTER TABLE users ADD COLUMN role_id INT NULL");
+            }
 
-    // Inserir roles que existam na tabela users mas não na user_roles
-    const [missingRoles] = await connection.query(`
+            // Inserir roles que existam na tabela users mas não na user_roles
+            const [missingRoles] = await connection.query(`
         SELECT DISTINCT role FROM users 
         WHERE role IS NOT NULL 
         AND role NOT IN (SELECT name FROM user_roles)
     `);
 
-    for (const row of missingRoles) {
-        await connection.query("INSERT INTO user_roles (name, label) VALUES (?, ?)", [row.role, row.role.charAt(0).toUpperCase() + row.role.slice(1)]);
-        console.log(`Nova role detetada e adicionada: ${row.role}`);
-    }
+            for (const row of missingRoles) {
+                await connection.query("INSERT INTO user_roles (name, label) VALUES (?, ?)", [row.role, row.role.charAt(0).toUpperCase() + row.role.slice(1)]);
+                console.log(`Nova role detetada e adicionada: ${row.role}`);
+            }
 
-    await connection.query("UPDATE users u JOIN user_roles ur ON u.role = ur.name SET u.role_id = ur.id WHERE u.role_id IS NULL");
+            await connection.query("UPDATE users u JOIN user_roles ur ON u.role = ur.name SET u.role_id = ur.id WHERE u.role_id IS NULL");
 
-    // Garantir que não há NULLs antes de aplicar NOT NULL
-    const [nullCount] = await connection.query("SELECT COUNT(*) as total FROM users WHERE role_id IS NULL");
-    if (nullCount[0].total === 0) {
-        await connection.query("ALTER TABLE users MODIFY COLUMN role_id INT NOT NULL");
-        try {
-            await connection.query("ALTER TABLE users ADD FOREIGN KEY (role_id) REFERENCES user_roles(id)");
-        } catch (e) { /* FK já pode existir */ }
-        console.log('Migração de users.role concluída.');
-    } else {
-        console.warn(`Atenção: Existem ${nullCount[0].total} utilizadores sem role mapeada. Não foi possível aplicar NOT NULL.`);
-    }
-} catch (e) { console.error('Erro na migração de users.role:', e.message); }
+            // Garantir que não há NULLs antes de aplicar NOT NULL
+            const [nullCount] = await connection.query("SELECT COUNT(*) as total FROM users WHERE role_id IS NULL");
+            if (nullCount[0].total === 0) {
+                await connection.query("ALTER TABLE users MODIFY COLUMN role_id INT NOT NULL");
+                try {
+                    await connection.query("ALTER TABLE users ADD FOREIGN KEY (role_id) REFERENCES user_roles(id)");
+                } catch (e) { /* FK já pode existir */ }
+                console.log('Migração de users.role concluída.');
+            } else {
+                console.warn(`Atenção: Existem ${nullCount[0].total} utilizadores sem role mapeada. Não foi possível aplicar NOT NULL.`);
+            }
+        } catch (e) { console.error('Erro na migração de users.role:', e.message); }
 
         // 6. Criar Tabela de Logs de Email
         try {
@@ -268,7 +268,7 @@ try {
             const [colsResource] = await connection.query("SHOW COLUMNS FROM resources LIKE 'location_id'");
             if (colsResource.length === 0) {
                 await connection.query("ALTER TABLE resources ADD COLUMN location_id INT NULL");
-                
+
                 // Criar localizações baseadas nos pisos existentes
                 const [existingFloors] = await connection.query("SELECT DISTINCT floor FROM resources");
                 // Garantir um escritório padrão
@@ -277,13 +277,13 @@ try {
 
                 for (const row of existingFloors) {
                     const floor = String(row.floor);
-                    
+
                     // Inserir localização temporária
                     await connection.query(
-                        "INSERT INTO locations (office_id, floor) VALUES (?, ?)", 
+                        "INSERT INTO locations (office_id, floor) VALUES (?, ?)",
                         [defOfficeId, floor]
                     );
-                    
+
                     // Obter id inserido
                     const [insertedLoc] = await connection.query(
                         "SELECT id FROM locations WHERE office_id = ? AND floor = ? LIMIT 1",
@@ -323,7 +323,7 @@ try {
 
                 // Atualizar locations.office_id baseado no building
                 await connection.query("UPDATE locations l JOIN offices o ON l.building = o.name SET l.office_id = o.id WHERE l.office_id IS NULL");
-                
+
                 // Mapear restantes
                 const [defOffice] = await connection.query("SELECT id FROM offices LIMIT 1");
                 if (defOffice.length > 0) {
@@ -332,25 +332,25 @@ try {
 
                 // Tornar office_id NOT NULL
                 await connection.query("ALTER TABLE locations MODIFY COLUMN office_id INT NOT NULL");
-                
+
                 // Tentar adicionar a FK
                 try {
                     await connection.query("ALTER TABLE locations ADD FOREIGN KEY (office_id) REFERENCES offices(id) ON DELETE CASCADE");
-                } catch(err) { /* FK já existe */ }
+                } catch (err) { /* FK já existe */ }
 
                 // Remover coluna antiga e índice
                 try {
                     await connection.query("ALTER TABLE locations DROP INDEX unique_loc");
-                } catch(err) {}
+                } catch (err) { }
 
                 try {
                     await connection.query("ALTER TABLE locations DROP COLUMN building");
-                } catch(err) {}
+                } catch (err) { }
 
                 // Criar novo índice único
                 try {
                     await connection.query("ALTER TABLE locations ADD UNIQUE KEY unique_loc (office_id, floor, zone)");
-                } catch(err) {}
+                } catch (err) { }
 
                 console.log('Migração de locations.building para offices concluída.');
             } else {
@@ -359,17 +359,17 @@ try {
                 if (nullOfficeIds[0].total > 0 || (await connection.query("SHOW COLUMNS FROM locations LIKE 'office_id'"))[0].length > 0) {
                     const [defOffice] = await connection.query("SELECT id FROM offices LIMIT 1");
                     const defOfficeId = defOffice.length > 0 ? defOffice[0].id : 1;
-                    
+
                     await connection.query("UPDATE locations SET office_id = ? WHERE office_id IS NULL", [defOfficeId]);
                     await connection.query("ALTER TABLE locations MODIFY COLUMN office_id INT NOT NULL");
-                    
+
                     try {
                         await connection.query("ALTER TABLE locations ADD FOREIGN KEY (office_id) REFERENCES offices(id) ON DELETE CASCADE");
-                    } catch(err) {}
-                    
+                    } catch (err) { }
+
                     try {
                         await connection.query("ALTER TABLE locations ADD UNIQUE KEY unique_loc (office_id, floor, zone)");
-                    } catch(err) {}
+                    } catch (err) { }
                 }
             }
 
@@ -386,6 +386,13 @@ try {
             console.log('Chave estrangeira home_office_id adicionada.');
         } catch (e) { /* FK já existe */ }
 
+        // 7.2.5. Colunas de número de pisos e dias de funcionamento na tabela offices
+        try {
+            await connection.query("ALTER TABLE offices ADD COLUMN floors INT NOT NULL DEFAULT 1");
+            await connection.query("ALTER TABLE offices ADD COLUMN working_days JSON NULL");
+            console.log('Colunas floors e working_days adicionadas à tabela offices.');
+        } catch (e) { /* Colunas já existem */ }
+        
         // 7.3. Tabela de Convidados em Reservas (booking_guests)
         try {
             await connection.query(`

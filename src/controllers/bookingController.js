@@ -1,4 +1,4 @@
-const db = require('../config/db'); 
+const db = require('../config/db');
 const sendEmail = require('../utils/sendEmail');
 const crypto = require('crypto');
 
@@ -54,17 +54,17 @@ exports.createBooking = async (req, res) => {
         if (!['daily', 'weekly'].includes(recurrence.type)) {
             return res.status(400).json({ message: "O tipo de recorrência deve ser 'daily' ou 'weekly'." });
         }
-        
+
         let currentStart = new Date(start_time.replace(' ', 'T') + 'Z');
         let currentEnd = new Date(end_time.replace(' ', 'T') + 'Z');
         const limitDateLocal = new Date(recurrence.endDate);
         const limitDateUTC = new Date(recurrence.endDate.replace(' ', 'T') + 'Z');
-        
+
         // Limitar a data de fim de recorrência a no máximo 1 mês de antecedência
         if (limitDateLocal > limiteFuturo) {
             return res.status(400).json({ message: "A data limite de recorrência não pode exceder o limite de 1 mês no futuro." });
         }
-        
+
         while (true) {
             if (recurrence.type === 'daily') {
                 currentStart.setUTCDate(currentStart.getUTCDate() + 1);
@@ -73,11 +73,11 @@ exports.createBooking = async (req, res) => {
                 currentStart.setUTCDate(currentStart.getUTCDate() + 7);
                 currentEnd.setUTCDate(currentEnd.getUTCDate() + 7);
             }
-            
+
             if (currentStart > limitDateUTC) {
                 break;
             }
-            
+
             // Converter de volta para formato de string ISO
             ocorrencias.push({
                 start_time: currentStart.toISOString().replace('T', ' ').substring(0, 19),
@@ -94,21 +94,24 @@ exports.createBooking = async (req, res) => {
     try {
         // Obter uma ligação do pool para gerir a transação
         connection = await db.getConnection();
-        
+
         // 1. INICIAR TRANSAÇÃO
         await connection.beginTransaction();
 
         // 2. VERIFICAR SE O RECURSO EXISTE E ESTÁ ATIVO (Obtendo tipo e escritório/localização)
         const queryRecurso = `
-            SELECT r.status, r.name AS resource_name, rt.name AS resource_type,
-                   o.name AS office_name, l.floor, l.zone
-            FROM resources r
-            JOIN resource_types rt ON r.type_id = rt.id
-            LEFT JOIN locations l ON r.location_id = l.id
-            LEFT JOIN offices o ON l.office_id = o.id
-            WHERE r.id = ?
-            FOR UPDATE
-        `;
+                SELECT r.status, r.name AS resource_name, rt.name AS resource_type,
+                       o.name AS office_name, l.floor, l.zone,
+                       TIME_FORMAT(o.operating_hours_start, '%H:%i') AS operating_hours_start,
+                       TIME_FORMAT(o.operating_hours_end, '%H:%i') AS operating_hours_end,
+                       o.working_days
+                FROM resources r
+                JOIN resource_types rt ON r.type_id = rt.id
+                LEFT JOIN locations l ON r.location_id = l.id
+                LEFT JOIN offices o ON l.office_id = o.id
+                WHERE r.id = ?
+                FOR UPDATE
+            `;
         const [recursos] = await connection.execute(queryRecurso, [resource_id]);
 
         if (recursos.length === 0) {
@@ -122,6 +125,7 @@ exports.createBooking = async (req, res) => {
         }
 
         const resource_type = recursos[0].resource_type;
+        const resourceOffice = recursos[0]; 
 
         // 3. VERIFICAR CONFLITOS COM BLOQUEIO DE ESCRITA (FOR UPDATE)
         const queryVerificacao = `
@@ -132,14 +136,46 @@ exports.createBooking = async (req, res) => {
             AND end_time > ?
             FOR UPDATE
         `;
-        
+
+        // Validação do horário e dias de funcionamento do escritório
+        if (resourceOffice.operating_hours_start && resourceOffice.operating_hours_end) {
+            const openTime = resourceOffice.operating_hours_start;
+            const closeTime = resourceOffice.operating_hours_end;
+            const workingDays = resourceOffice.working_days
+                ? (typeof resourceOffice.working_days === 'string' ? JSON.parse(resourceOffice.working_days) : resourceOffice.working_days)
+                : [2, 3, 4, 5, 6]; // Segunda a Sexta por defeito
+
+            for (const ocorrencia of ocorrencias) {
+                const dateStart = new Date(ocorrencia.start_time.replace(' ', 'T') + 'Z');
+                const dateEnd = new Date(ocorrencia.end_time.replace(' ', 'T') + 'Z');
+
+                const startHM = ocorrencia.start_time.substring(11, 16);
+                const endHM = ocorrencia.end_time.substring(11, 16);
+
+                const dayOfWeekStart = dateStart.getUTCDay() + 1; // 1 = Domingo, 2 = Segunda...
+                const dayOfWeekEnd = dateEnd.getUTCDay() + 1;
+
+                // Validar dia da semana
+                if (!workingDays.includes(dayOfWeekStart) || !workingDays.includes(dayOfWeekEnd)) {
+                    await connection.rollback();
+                    return res.status(400).json({ message: "Não é possível efetuar reservas fora dos dias de funcionamento do escritório." });
+                }
+
+                // Validar horas e minutos
+                if (startHM < openTime || endHM > closeTime) {
+                    await connection.rollback();
+                    return res.status(400).json({ message: `O horário selecionado está fora do período de funcionamento (${openTime} - ${closeTime}).` });
+                }
+            }
+        }
+
         for (const ocorrencia of ocorrencias) {
             const [reservasConflituosas] = await connection.execute(queryVerificacao, [resource_id, ocorrencia.end_time, ocorrencia.start_time]);
             if (reservasConflituosas.length > 0) {
                 await connection.rollback();
                 const dataFormatada = new Date(ocorrencia.start_time).toLocaleDateString('pt-PT');
-                return res.status(400).json({ 
-                    message: `Lamentamos, mas este recurso já se encontra reservado no dia ${dataFormatada} para o horário selecionado.` 
+                return res.status(400).json({
+                    message: `Lamentamos, mas este recurso já se encontra reservado no dia ${dataFormatada} para o horário selecionado.`
                 });
             }
         }
@@ -167,7 +203,7 @@ exports.createBooking = async (req, res) => {
                 await connection.rollback();
                 return res.status(400).json({ message: "O recurso extra selecionado deve ser um monitor." });
             }
-            
+
             // Verificar conflitos do monitor extra para cada ocorrência
             for (const ocorrencia of ocorrencias) {
                 const [extraConflitos] = await connection.execute(queryVerificacao, [extra_resource_id, ocorrencia.end_time, ocorrencia.start_time]);
@@ -181,7 +217,7 @@ exports.createBooking = async (req, res) => {
             }
             hasExtra = true;
         }
-        
+
         // 4. CRIAR AS RESERVAS
         const recurrence_group_id = ocorrencias.length > 1 ? crypto.randomUUID() : null;
         const mainBookingIds = [];
@@ -226,7 +262,7 @@ exports.createBooking = async (req, res) => {
                     'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id, recurrence_group_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
                     [user_id, extra_resource_id, ocorrencia.start_time, ocorrencia.end_time, 'confirmed', mainBookingId, recurrence_group_id]
                 );
-                
+
                 const extraBookingData = { resource_id: extra_resource_id, start_time: ocorrencia.start_time, end_time: ocorrencia.end_time, status: 'confirmed', parent_booking_id: mainBookingId, recurrence_group_id };
                 await connection.execute(
                     'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
@@ -262,7 +298,7 @@ exports.createBooking = async (req, res) => {
                     const dataInicioStr = formatarData(start_time);
                     const dataFimStr = formatarData(end_time);
                     const local = `${recursos[0].resource_name} (${recursos[0].office_name || 'Escritório'} - Piso ${recursos[0].floor || 1})`;
-                    
+
                     let recText = '';
                     if (recurrence && recurrence.type) {
                         const freqLabel = recurrence.type === 'daily' ? 'diário' : 'semanal';
@@ -301,8 +337,8 @@ Equipa Reserva Office`;
                 .catch(err => console.error("Erro ao obter nome do organizador para email:", err));
         }
 
-        return res.status(201).json({ 
-            message: "Reserva efetuada com sucesso!", 
+        return res.status(201).json({
+            message: "Reserva efetuada com sucesso!",
             booking_id: mainBookingIds[0]
         });
 
@@ -317,12 +353,12 @@ Equipa Reserva Office`;
 
 // Listar reservas do utilizador autenticado
 exports.getUserBookings = async (req, res) => {
-    const user_id = req.user.id; 
+    const user_id = req.user.id;
 
     req.log.info(`Procurando reservas para o utilizador ID: ${user_id}`);
     try {
         await autoCompleteBookings();
-        
+
         const query = `
             SELECT 
                 b.id AS booking_id, 
@@ -339,7 +375,7 @@ exports.getUserBookings = async (req, res) => {
             WHERE b.user_id = ? AND b.parent_booking_id IS NULL
             ORDER BY b.start_time DESC
         `;
-        
+
         const [bookings] = await db.execute(query, [user_id]);
         for (const booking of bookings) {
             // Carregar convidados
@@ -450,7 +486,7 @@ exports.cancelBooking = async (req, res) => {
             // REGISTAR NO HISTÓRICO DA PRINCIPAL
             const oldData = { resource_id: oldBooking.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: oldBooking.status };
             const newData = { ...oldData, status: 'cancelled' };
-            
+
             await connection.execute(
                 'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
                 [booking_id, 'cancel', JSON.stringify(oldData), JSON.stringify(newData), user_id]
@@ -553,7 +589,7 @@ exports.endBookingEarly = async (req, res) => {
         await connection.beginTransaction();
 
         const [bookings] = await connection.execute(
-            'SELECT * FROM bookings WHERE id = ? AND user_id = ? FOR UPDATE', 
+            'SELECT * FROM bookings WHERE id = ? AND user_id = ? FOR UPDATE',
             [booking_id, user_id]
         );
 
@@ -586,7 +622,7 @@ exports.endBookingEarly = async (req, res) => {
         // REGISTAR NO HISTÓRICO
         const oldData = { resource_id: booking.resource_id, start_time: booking.start_time, end_time: booking.end_time, status: booking.status };
         const newData = { ...oldData, end_time: mysqlNow, status: 'completed' };
-        
+
         await connection.execute(
             'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
             [booking_id, 'update', JSON.stringify(oldData), JSON.stringify(newData), user_id]
@@ -679,15 +715,18 @@ exports.updateBooking = async (req, res) => {
 
         // 2. Verificar se o recurso (novo ou mesmo) existe e está ativo (Obtendo tipo e escritório/localização)
         const queryNewResource = `
-            SELECT r.status, r.name AS resource_name, rt.name AS resource_type,
-                   o.name AS office_name, l.floor, l.zone
-            FROM resources r
-            JOIN resource_types rt ON r.type_id = rt.id
-            LEFT JOIN locations l ON r.location_id = l.id
-            LEFT JOIN offices o ON l.office_id = o.id
-            WHERE r.id = ?
-            FOR UPDATE
-        `;
+                SELECT r.status, r.name AS resource_name, rt.name AS resource_type,
+                       o.name AS office_name, l.floor, l.zone,
+                       TIME_FORMAT(o.operating_hours_start, '%H:%i') AS operating_hours_start,
+                       TIME_FORMAT(o.operating_hours_end, '%H:%i') AS operating_hours_end,
+                       o.working_days
+                FROM resources r
+                JOIN resource_types rt ON r.type_id = rt.id
+                LEFT JOIN locations l ON r.location_id = l.id
+                LEFT JOIN offices o ON l.office_id = o.id
+                WHERE r.id = ?
+                FOR UPDATE
+            `;
         const [recursos] = await connection.execute(queryNewResource, [resource_id]);
 
         if (recursos.length === 0) {
@@ -698,6 +737,36 @@ exports.updateBooking = async (req, res) => {
         if (recursos[0].status !== 'active') {
             await connection.rollback();
             return res.status(400).json({ message: "Lamentamos, mas este recurso encontra-se em manutenção." });
+        }
+
+        const resourceOffice = recursos[0];
+
+        // Validação de horários e dias operacionais do escritório
+        if (resourceOffice.operating_hours_start && resourceOffice.operating_hours_end) {
+            const openTime = resourceOffice.operating_hours_start;
+            const closeTime = resourceOffice.operating_hours_end;
+            const workingDays = resourceOffice.working_days
+                ? (typeof resourceOffice.working_days === 'string' ? JSON.parse(resourceOffice.working_days) : resourceOffice.working_days)
+                : [2, 3, 4, 5, 6];
+
+            const startHM = start_time.substring(11, 16);
+            const endHM = end_time.substring(11, 16);
+
+            const dateStart = new Date(start_time.replace(' ', 'T') + 'Z');
+            const dateEnd = new Date(end_time.replace(' ', 'T') + 'Z');
+
+            const dayOfWeekStart = dateStart.getUTCDay() + 1;
+            const dayOfWeekEnd = dateEnd.getUTCDay() + 1;
+
+            if (!workingDays.includes(dayOfWeekStart) || !workingDays.includes(dayOfWeekEnd)) {
+                await connection.rollback();
+                return res.status(400).json({ message: "Não é possível alterar reservas para fora dos dias de funcionamento do escritório." });
+            }
+
+            if (startHM < openTime || endHM > closeTime) {
+                await connection.rollback();
+                return res.status(400).json({ message: `O novo horário está fora do período de funcionamento do escritório (${openTime} - ${closeTime}).` });
+            }
         }
 
         // 3. Verificar conflitos ignorando a reserva atual
@@ -715,8 +784,8 @@ exports.updateBooking = async (req, res) => {
 
         if (reservasConflituosas.length > 0) {
             await connection.rollback();
-            return res.status(400).json({ 
-                message: "Lamentamos, mas este recurso já se encontra reservado para o horário selecionado." 
+            return res.status(400).json({
+                message: "Lamentamos, mas este recurso já se encontra reservado para o horário selecionado."
             });
         }
 
@@ -787,7 +856,7 @@ exports.updateBooking = async (req, res) => {
                 // Atualizar monitor existente
                 const childOldData = { resource_id: childBooking.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: childBooking.status };
                 const childNewData = { resource_id: extra_resource_id, start_time, end_time, status: childBooking.status };
-                
+
                 await connection.execute(
                     'UPDATE bookings SET resource_id = ?, start_time = ?, end_time = ? WHERE id = ?',
                     [extra_resource_id, start_time, end_time, childBooking.id]
@@ -803,7 +872,7 @@ exports.updateBooking = async (req, res) => {
                     'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id) VALUES (?, ?, ?, ?, ?, ?)',
                     [user_id, extra_resource_id, start_time, end_time, 'confirmed', booking_id]
                 );
-                
+
                 const extraBookingData = { resource_id: extra_resource_id, start_time, end_time, status: 'confirmed', parent_booking_id: booking_id };
                 await connection.execute(
                     'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
@@ -869,12 +938,12 @@ exports.updateBooking = async (req, res) => {
                             guestUserId = existingUsers[0].id;
                             guestName = existingUsers[0].name;
                         }
-                        
+
                         await connection.execute(
                             'INSERT INTO booking_guests (booking_id, user_id, email, name, status) VALUES (?, ?, ?, ?, ?)',
                             [booking_id, guestUserId, email, guestName, 'pending']
                         );
-                        
+
                         guestDetailsToInvite.push({ email, name: guestName, user_id: guestUserId });
                     }
                 }
@@ -901,9 +970,9 @@ exports.updateBooking = async (req, res) => {
         await connection.commit();
 
         // 5. ENVIAR EMAILS EM BACKGROUND PÓS-COMMIT
-        const timeOrRoomChanged = oldBooking.resource_id !== resource_id || 
-                                  new Date(oldBooking.start_time).getTime() !== new Date(start_time).getTime() ||
-                                  new Date(oldBooking.end_time).getTime() !== new Date(end_time).getTime();
+        const timeOrRoomChanged = oldBooking.resource_id !== resource_id ||
+            new Date(oldBooking.start_time).getTime() !== new Date(start_time).getTime() ||
+            new Date(oldBooking.end_time).getTime() !== new Date(end_time).getTime();
 
         db.execute('SELECT name FROM users WHERE id = ?', [user_id])
             .then(([organizador]) => {
@@ -1028,7 +1097,7 @@ Equipa Reserva Office`;
 exports.getAllBookings = async (req, res) => {
     try {
         await autoCompleteBookings();
-        
+
         const query = `
             SELECT 
                 b.id AS booking_id, 
@@ -1047,7 +1116,7 @@ exports.getAllBookings = async (req, res) => {
             WHERE b.parent_booking_id IS NULL
             ORDER BY b.start_time DESC
         `;
-        
+
         const [bookings] = await db.execute(query);
         for (const booking of bookings) {
             // Convidados se for sala
