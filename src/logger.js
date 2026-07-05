@@ -55,9 +55,14 @@ const dbStream = new Writable({
 
                 await connection.commit();
             } catch (err) {
-                if (connection) await connection.rollback();
-                console.error('Erro ao gravar log na BD:', err.message);
-            } finally {
+                    // Tentar efetuar rollback com segurança para evitar crashar o servidor se a ligação estiver fechada
+                    try {
+                        if (connection) await connection.rollback();
+                    } catch (rollbackErr) {
+                        console.error('Erro ao efetuar rollback do log de auditoria:', rollbackErr.message);
+                    }
+                    console.error('Erro ao gravar log na BD:', err.message);
+                } finally {
                 if (connection) connection.release();
                 callback();
             }

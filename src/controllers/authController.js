@@ -472,30 +472,33 @@ exports.submitRegistrationRequest = async (req, res) => {
         return res.status(400).json({ message: 'O formato do email é inválido.' });
     }
 
-    try {
-        const [existingUser] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
-        if (existingUser.length > 0) {
-            return res.status(400).json({ message: 'Já existe uma conta ativa com este email.' });
+        try {
+            // Verificar se o email já existe nos utilizadores ou em pedidos pendentes
+            const [existingUser] = await db.execute('SELECT id FROM users WHERE email = ?', [email]);
+            const [existingRequest] = await db.execute(
+                "SELECT id FROM registration_requests WHERE email = ? AND status = 'pending'",
+                [email]
+            );
+
+            // Se o utilizador já existir ou se já houver um pedido de registo pendente,
+            // simulamos que o pedido foi submetido para prevenir a descoberta (enumeração) de emails existentes no sistema.
+            if (existingUser.length > 0 || existingRequest.length > 0) {
+                return res.status(201).json({
+                    message: 'Pedido de registo enviado com sucesso! Aguarde a aprovação do administrador.'
+                });
+            }
+
+            // Criar o pedido de registo na base de dados caso o email seja novo
+            await db.execute(
+                'INSERT INTO registration_requests (name, email, reason) VALUES (?, ?, ?)',
+                [name.trim(), email, reason || null]
+            );
+
+            res.status(201).json({ message: 'Pedido de registo enviado com sucesso! Aguarde a aprovação do administrador.' });
+        } catch (error) {
+            console.error('Erro ao submeter pedido de registo:', error);
+            res.status(500).json({ message: 'Erro interno ao submeter o pedido.' });
         }
-
-        const [existingRequest] = await db.execute(
-            "SELECT id FROM registration_requests WHERE email = ? AND status = 'pending'",
-            [email]
-        );
-        if (existingRequest.length > 0) {
-            return res.status(400).json({ message: 'Já existe um pedido de registo pendente para este email.' });
-        }
-
-        await db.execute(
-            'INSERT INTO registration_requests (name, email, reason) VALUES (?, ?, ?)',
-            [name.trim(), email, reason || null]
-        );
-
-        res.status(201).json({ message: 'Pedido de registo enviado com sucesso! Aguarde a aprovação do administrador.' });
-    } catch (error) {
-        console.error('Erro ao submeter pedido de registo:', error);
-        res.status(500).json({ message: 'Erro interno ao submeter o pedido.' });
-    }
 };
 
 // 2. Obter todos os pedidos de registo (Apenas Admin)
@@ -543,16 +546,15 @@ exports.resolveRegistrationRequest = async (req, res) => {
                 [request.name, request.email, hashedPassword, roleId]
             );
 
-            try {
-                await sendEmail({
+                // Enviar email em background (sem await) para evitar timeouts na ligação com a base de dados
+                sendEmail({
                     email: request.email,
                     subject: 'Pedido de Registo Aprovado - Password Temporária',
                     message: `Olá ${request.name},\n\nO teu pedido de registo foi aprovado pelo administrador!\n\nAs tuas credenciais de acesso são:\nEmail: ${request.email}\nPassword Temporária: ${tempPassword}\n\nNota: Terás de alterar esta password no teu primeiro login.`,
                     email_type: 'registration_approved'
+                }).catch(emailError => {
+                    console.error('Erro ao enviar email de aprovação. Password provisória:', tempPassword, emailError.message);
                 });
-            } catch (emailError) {
-                console.error('Erro ao enviar email de aprovação. Password provisória:', tempPassword);
-            }
 
             await db.execute(
                 "UPDATE registration_requests SET status = 'approved', resolved_at = NOW() WHERE id = ?",
@@ -569,16 +571,15 @@ exports.resolveRegistrationRequest = async (req, res) => {
                 [id]
             );
 
-            try {
-                await sendEmail({
+                // Enviar email em background (sem await) para evitar timeouts na ligação com a base de dados
+                sendEmail({
                     email: request.email,
                     subject: 'Pedido de Registo - Informação',
                     message: `Olá ${request.name},\n\nLamentamos informar que o teu pedido de registo foi recusado pelo administrador do portal Reserva Office.\n\nPara mais informações, entra em contacto com o suporte do teu escritório.`,
                     email_type: 'registration_rejected'
+                }).catch(emailError => {
+                    console.error('Erro ao enviar email de rejeição:', emailError.message);
                 });
-            } catch (emailError) {
-                console.error('Erro ao enviar email de rejeição');
-            }
 
             res.json({ message: 'Pedido recusado com sucesso.' });
         }
