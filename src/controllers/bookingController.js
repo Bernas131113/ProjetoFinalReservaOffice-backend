@@ -125,7 +125,7 @@ exports.createBooking = async (req, res) => {
         }
 
         const resource_type = recursos[0].resource_type;
-        const resourceOffice = recursos[0]; 
+        const resourceOffice = recursos[0];
 
         // 3. VERIFICAR CONFLITOS COM BLOQUEIO DE ESCRITA (FOR UPDATE)
         const queryVerificacao = `
@@ -377,36 +377,55 @@ exports.getUserBookings = async (req, res) => {
         `;
 
         const [bookings] = await db.execute(query, [user_id]);
-        for (const booking of bookings) {
-            // Carregar convidados
-            if (booking.resource_type === 'room') {
-                const [guests] = await db.execute(
-                    'SELECT email, name, status FROM booking_guests WHERE booking_id = ?',
-                    [booking.booking_id]
-                );
-                booking.guests = guests;
-            } else {
-                booking.guests = [];
-            }
 
-            // Carregar monitor extra se existir
-            const [childBookings] = await db.execute(
-                `SELECT b.id AS booking_id, b.resource_id, r.name AS resource_name 
+        // Se não houver reservas, retorna logo um array vazio e evita queries desnecessárias
+        if (bookings.length === 0) {
+            return res.status(200).json([]);
+        }
+
+        const bookingIds = bookings.map(b => b.booking_id);
+        const placeholders = bookingIds.map(() => '?').join(',');
+
+        // 1. Procura TODOS os convidados das reservas de uma só vez (1 query)
+        const [allGuests] = await db.execute(
+            `SELECT booking_id, email, name, status FROM booking_guests WHERE booking_id IN (${placeholders})`,
+            bookingIds
+        );
+
+        // Agrupa os convidados em memória usando um mapa
+        const guestsMap = {};
+        allGuests.forEach(g => {
+            if (!guestsMap[g.booking_id]) {
+                guestsMap[g.booking_id] = [];
+            }
+            guestsMap[g.booking_id].push({ email: g.email, name: g.name, status: g.status });
+        });
+
+        // 2. Procura TODOS os monitores extras das reservas de uma só vez (1 query)
+        const [allChildBookings] = await db.execute(
+            `SELECT b.id AS booking_id, b.resource_id, b.parent_booking_id, r.name AS resource_name
                  FROM bookings b
                  JOIN resources r ON b.resource_id = r.id
-                 WHERE b.parent_booking_id = ? AND b.status = 'confirmed'`,
-                [booking.booking_id]
-            );
-            if (childBookings.length > 0) {
-                booking.extra = {
-                    booking_id: childBookings[0].booking_id,
-                    resource_id: childBookings[0].resource_id,
-                    resource_name: childBookings[0].resource_name
-                };
-            } else {
-                booking.extra = null;
-            }
+                 WHERE b.parent_booking_id IN (${placeholders}) AND b.status = 'confirmed'`,
+            bookingIds
+        );
+
+        // Agrupa os monitores extras em memória
+        const childMap = {};
+        allChildBookings.forEach(c => {
+            childMap[c.parent_booking_id] = {
+                booking_id: c.booking_id,
+                resource_id: c.resource_id,
+                resource_name: c.resource_name
+            };
+        });
+
+        // Associa os dados agregados a cada reserva correspondente
+        for (const booking of bookings) {
+            booking.guests = guestsMap[booking.booking_id] || [];
+            booking.extra = childMap[booking.booking_id] || null;
         }
+
         return res.status(200).json(bookings);
 
     } catch (error) {
@@ -1118,38 +1137,51 @@ exports.getAllBookings = async (req, res) => {
         `;
 
         const [bookings] = await db.execute(query);
-        for (const booking of bookings) {
-            // Convidados se for sala
-            if (booking.resource_type === 'room') {
-                const [guests] = await db.execute(
-                    'SELECT email, name, status FROM booking_guests WHERE booking_id = ?',
-                    [booking.booking_id]
-                );
-                booking.guests = guests;
-            } else {
-                booking.guests = [];
-            }
-
-            // Monitor extra se existir
-            const [childBookings] = await db.execute(
-                `SELECT b.id AS booking_id, b.resource_id, r.name AS resource_name 
-                 FROM bookings b
-                 JOIN resources r ON b.resource_id = r.id
-                 WHERE b.parent_booking_id = ? AND b.status = 'confirmed'`,
-                [booking.booking_id]
-            );
-            if (childBookings.length > 0) {
-                booking.extra = {
-                    booking_id: childBookings[0].booking_id,
-                    resource_id: childBookings[0].resource_id,
-                    resource_name: childBookings[0].resource_name
-                };
-            } else {
-                booking.extra = null;
-            }
+        // Se não houver reservas, retorna logo
+        if (bookings.length === 0) {
+            return res.status(200).json([]);
         }
 
-        // Devolvemos a lista completa ao Administrador
+        const bookingIds = bookings.map(b => b.booking_id);
+        const placeholders = bookingIds.map(() => '?').join(',');
+
+        // 1. Procura todos os convidados em lote (1 query)
+        const [allGuests] = await db.execute(
+            `SELECT booking_id, email, name, status FROM booking_guests WHERE booking_id IN (${placeholders})`,
+            bookingIds
+        );
+
+        const guestsMap = {};
+        allGuests.forEach(g => {
+            if (!guestsMap[g.booking_id]) {
+                guestsMap[g.booking_id] = [];
+            }
+            guestsMap[g.booking_id].push({ email: g.email, name: g.name, status: g.status });
+        });
+
+        // 2. Procura todos os monitores em lote (1 query)
+        const [allChildBookings] = await db.execute(
+            `SELECT b.id AS booking_id, b.resource_id, b.parent_booking_id, r.name AS resource_name
+                 FROM bookings b
+                 JOIN resources r ON b.resource_id = r.id
+                 WHERE b.parent_booking_id IN (${placeholders}) AND b.status = 'confirmed'`,
+            bookingIds
+        );
+
+        const childMap = {};
+        allChildBookings.forEach(c => {
+            childMap[c.parent_booking_id] = {
+                booking_id: c.booking_id,
+                resource_id: c.resource_id,
+                resource_name: c.resource_name
+            };
+        });
+
+        for (const booking of bookings) {
+            booking.guests = guestsMap[booking.booking_id] || [];
+            booking.extra = childMap[booking.booking_id] || null;
+        }
+
         return res.status(200).json(bookings);
 
     } catch (error) {
