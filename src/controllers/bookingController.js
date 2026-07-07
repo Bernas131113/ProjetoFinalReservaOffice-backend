@@ -17,7 +17,7 @@ const autoCompleteBookings = async () => {
 
 // Criar nova reserva com validação de conflitos
 exports.createBooking = async (req, res) => {
-    const { resource_id, start_time, end_time, guests, extra_resource_id, recurrence } = req.body;
+    const { resource_id, start_time, end_time, guests, extra_resource_id, extra_resource_ids, recurrence } = req.body;
     const user_id = req.user.id;
 
     if (!resource_id || !start_time || !end_time) {
@@ -180,42 +180,53 @@ exports.createBooking = async (req, res) => {
             }
         }
 
-        // 3.1 VERIFICAR MONITOR EXTRA SE ENVIADO
-        let hasExtra = false;
-        if (extra_resource_id) {
-            const queryExtra = `
-                SELECT r.status, r.name, rt.name AS resource_type
-                FROM resources r
-                JOIN resource_types rt ON r.type_id = rt.id
-                WHERE r.id = ?
-                FOR UPDATE
-            `;
-            const [extras] = await connection.execute(queryExtra, [extra_resource_id]);
-            if (extras.length === 0) {
-                await connection.rollback();
-                return res.status(404).json({ message: "O monitor extra selecionado não existe." });
-            }
-            if (extras[0].status !== 'active') {
-                await connection.rollback();
-                return res.status(400).json({ message: "O monitor extra selecionado está em manutenção." });
-            }
-            if (extras[0].resource_type !== 'monitor') {
-                await connection.rollback();
-                return res.status(400).json({ message: "O recurso extra selecionado deve ser um monitor." });
-            }
+        // 3.1 VERIFICAR EQUIPAMENTOS EXTRAS SE ENVIADOS
+        let resolved_extra_resource_ids = [];
+        if (Array.isArray(extra_resource_ids)) {
+            resolved_extra_resource_ids = extra_resource_ids;
+        } else if (extra_resource_id) {
+            resolved_extra_resource_ids = [extra_resource_id];
+        }
 
-            // Verificar conflitos do monitor extra para cada ocorrência
-            for (const ocorrencia of ocorrencias) {
-                const [extraConflitos] = await connection.execute(queryVerificacao, [extra_resource_id, ocorrencia.end_time, ocorrencia.start_time]);
-                if (extraConflitos.length > 0) {
+        let hasExtras = false;
+        let extrasMetadata = [];
+        if (resolved_extra_resource_ids.length > 0) {
+            for (const extraId of resolved_extra_resource_ids) {
+                const queryExtra = `
+                    SELECT r.status, r.name, rt.name AS resource_type
+                    FROM resources r
+                    JOIN resource_types rt ON r.type_id = rt.id
+                    WHERE r.id = ?
+                    FOR UPDATE
+                `;
+                const [extras] = await connection.execute(queryExtra, [extraId]);
+                if (extras.length === 0) {
                     await connection.rollback();
-                    const dataFormatada = new Date(ocorrencia.start_time).toLocaleDateString('pt-PT');
-                    return res.status(400).json({
-                        message: `Lamentamos, mas o monitor extra selecionado já se encontra reservado no dia ${dataFormatada} para o horário.`
-                    });
+                    return res.status(404).json({ message: `O equipamento extra selecionado (ID: ${extraId}) não existe.` });
                 }
+                if (extras[0].status !== 'active') {
+                    await connection.rollback();
+                    return res.status(400).json({ message: `O equipamento extra "${extras[0].name}" está em manutenção.` });
+                }
+                if (extras[0].resource_type === 'desk' || extras[0].resource_type === 'room') {
+                    await connection.rollback();
+                    return res.status(400).json({ message: `O recurso extra "${extras[0].name}" deve ser um periférico ou acessório.` });
+                }
+
+                // Verificar conflitos do equipamento extra para cada ocorrência
+                for (const ocorrencia of ocorrencias) {
+                    const [extraConflitos] = await connection.execute(queryVerificacao, [extraId, ocorrencia.end_time, ocorrencia.start_time]);
+                    if (extraConflitos.length > 0) {
+                        await connection.rollback();
+                        const dataFormatada = new Date(ocorrencia.start_time).toLocaleDateString('pt-PT');
+                        return res.status(400).json({
+                            message: `Lamentamos, mas o equipamento extra "${extras[0].name}" já se encontra reservado no dia ${dataFormatada} para o horário.`
+                        });
+                    }
+                }
+                extrasMetadata.push({ id: extraId, name: extras[0].name });
             }
-            hasExtra = true;
+            hasExtras = true;
         }
 
         // 4. CRIAR AS RESERVAS
@@ -256,18 +267,20 @@ exports.createBooking = async (req, res) => {
                 [mainBookingId, 'create', JSON.stringify(newBookingData), user_id]
             );
 
-            // 4.2 INSERIR MONITOR EXTRA SE APLICÁVEL
-            if (hasExtra) {
-                const [extraResult] = await connection.execute(
-                    'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id, recurrence_group_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    [user_id, extra_resource_id, ocorrencia.start_time, ocorrencia.end_time, 'confirmed', mainBookingId, recurrence_group_id]
-                );
+            // 4.2 INSERIR EQUIPAMENTOS EXTRAS SE APLICÁVEL
+            if (hasExtras) {
+                for (const extra of extrasMetadata) {
+                    const [extraResult] = await connection.execute(
+                        'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id, recurrence_group_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                        [user_id, extra.id, ocorrencia.start_time, ocorrencia.end_time, 'confirmed', mainBookingId, recurrence_group_id]
+                    );
 
-                const extraBookingData = { resource_id: extra_resource_id, start_time: ocorrencia.start_time, end_time: ocorrencia.end_time, status: 'confirmed', parent_booking_id: mainBookingId, recurrence_group_id };
-                await connection.execute(
-                    'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
-                    [extraResult.insertId, 'create', JSON.stringify(extraBookingData), user_id]
-                );
+                    const extraBookingData = { resource_id: extra.id, start_time: ocorrencia.start_time, end_time: ocorrencia.end_time, status: 'confirmed', parent_booking_id: mainBookingId, recurrence_group_id };
+                    await connection.execute(
+                        'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
+                        [extraResult.insertId, 'create', JSON.stringify(extraBookingData), user_id]
+                    );
+                }
             }
 
             // 4.3 PROCESSAR CONVIDADOS SE FOR SALA
@@ -410,20 +423,24 @@ exports.getUserBookings = async (req, res) => {
             bookingIds
         );
 
-        // Agrupa os monitores extras em memória
+        // Agrupa os equipamentos extras em memória
         const childMap = {};
         allChildBookings.forEach(c => {
-            childMap[c.parent_booking_id] = {
+            if (!childMap[c.parent_booking_id]) {
+                childMap[c.parent_booking_id] = [];
+            }
+            childMap[c.parent_booking_id].push({
                 booking_id: c.booking_id,
                 resource_id: c.resource_id,
                 resource_name: c.resource_name
-            };
+            });
         });
 
         // Associa os dados agregados a cada reserva correspondente
         for (const booking of bookings) {
             booking.guests = guestsMap[booking.booking_id] || [];
-            booking.extra = childMap[booking.booking_id] || null;
+            booking.extras = childMap[booking.booking_id] || [];
+            booking.extra = booking.extras.length > 0 ? booking.extras[0] : null;
         }
 
         return res.status(200).json(bookings);
@@ -672,7 +689,7 @@ exports.endBookingEarly = async (req, res) => {
 // Atualizar reserva existente
 exports.updateBooking = async (req, res) => {
     const booking_id = req.params.id;
-    const { resource_id, start_time, end_time, guests, extra_resource_id } = req.body;
+    const { resource_id, start_time, end_time, guests, extra_resource_id, extra_resource_ids } = req.body;
     const user_id = req.user.id;
 
     if (!resource_id || !start_time || !end_time) {
@@ -822,96 +839,127 @@ exports.updateBooking = async (req, res) => {
             [booking_id, 'update', JSON.stringify(oldData), JSON.stringify(newData), user_id]
         );
 
-        // 3.1 PROCESSAR ATUALIZAÇÃO DO MONITOR EXTRA
-        // Buscar se já tem monitor extra ativo (reserva filho)
+        // 3.1 PROCESSAR ATUALIZAÇÃO DOS EQUIPAMENTOS EXTRAS
+        // Buscar se já tem equipamentos extras ativos (reservas filhas)
         const [existingChildBookings] = await connection.execute(
             "SELECT id, resource_id, status FROM bookings WHERE parent_booking_id = ? AND status = 'confirmed' FOR UPDATE",
             [booking_id]
         );
-        const childBooking = existingChildBookings[0];
 
-        if (extra_resource_id) {
-            const queryExtra = `
-                SELECT r.status, r.name, rt.name AS resource_type
-                FROM resources r
-                JOIN resource_types rt ON r.type_id = rt.id
-                WHERE r.id = ?
-                FOR UPDATE
-            `;
-            const [extras] = await connection.execute(queryExtra, [extra_resource_id]);
-            if (extras.length === 0) {
-                await connection.rollback();
-                return res.status(404).json({ message: "O monitor extra selecionado não existe." });
+        let resolved_extra_resource_ids = [];
+        if (Array.isArray(extra_resource_ids)) {
+            resolved_extra_resource_ids = extra_resource_ids;
+        } else if (extra_resource_id) {
+            resolved_extra_resource_ids = [extra_resource_id];
+        }
+
+        // Reconciliar equipamentos extras
+        const existingExtraResourceIds = existingChildBookings.map(b => b.resource_id);
+
+        // Validar e buscar dados dos novos equipamentos a adicionar/manter
+        let extrasMetadata = [];
+        if (resolved_extra_resource_ids.length > 0) {
+            for (const extraId of resolved_extra_resource_ids) {
+                const queryExtra = `
+                    SELECT r.status, r.name, rt.name AS resource_type
+                    FROM resources r
+                    JOIN resource_types rt ON r.type_id = rt.id
+                    WHERE r.id = ?
+                    FOR UPDATE
+                `;
+                const [extras] = await connection.execute(queryExtra, [extraId]);
+                if (extras.length === 0) {
+                    await connection.rollback();
+                    return res.status(404).json({ message: `O equipamento extra selecionado (ID: ${extraId}) não existe.` });
+                }
+
+                // Verificar conflitos do equipamento extra (excluindo a reserva filho atual se existir)
+                const child = existingChildBookings.find(b => b.resource_id === extraId);
+                const childBookingId = child ? child.id : 0;
+                
+                // Só validamos se for um novo recurso OU se o horário tiver mudado
+                const timeChanged = start_time !== oldBooking.start_time || end_time !== oldBooking.end_time;
+                if (!child || timeChanged) {
+                    if (!child) {
+                        // Novo recurso extra
+                        if (extras[0].status !== 'active') {
+                            await connection.rollback();
+                            return res.status(400).json({ message: `O equipamento extra "${extras[0].name}" está em manutenção.` });
+                        }
+                        if (extras[0].resource_type === 'desk' || extras[0].resource_type === 'room') {
+                            await connection.rollback();
+                            return res.status(400).json({ message: `O recurso extra "${extras[0].name}" deve ser um periférico ou acessório.` });
+                        }
+                    }
+
+                    const queryVerificacaoExtra = `
+                        SELECT id FROM bookings 
+                        WHERE resource_id = ? 
+                        AND status = 'confirmed'
+                        AND id != ?
+                        AND start_time < ? 
+                        AND end_time > ?
+                        FOR UPDATE
+                    `;
+                    const [extraConflitos] = await connection.execute(queryVerificacaoExtra, [extraId, childBookingId, end_time, start_time]);
+                    if (extraConflitos.length > 0) {
+                        await connection.rollback();
+                        return res.status(400).json({
+                            message: `Lamentamos, mas o equipamento extra "${extras[0].name}" já se encontra reservado para o horário.`
+                        });
+                    }
+                }
+                extrasMetadata.push({ id: extraId, name: extras[0].name });
             }
-            if (extras[0].status !== 'active') {
-                await connection.rollback();
-                return res.status(400).json({ message: "O monitor extra selecionado está em manutenção." });
-            }
-            if (extras[0].resource_type !== 'monitor') {
-                await connection.rollback();
-                return res.status(400).json({ message: "O recurso extra selecionado deve ser um monitor." });
-            }
+        }
 
-            // Validar conflitos do monitor extra (excluindo a reserva filho atual se existir)
-            const childBookingId = childBooking ? childBooking.id : 0;
-            const queryVerificacaoExtra = `
-                SELECT id FROM bookings 
-                WHERE resource_id = ? 
-                AND status = 'confirmed'
-                AND id != ?
-                AND start_time < ? 
-                AND end_time > ?
-                FOR UPDATE
-            `;
-            const [extraConflitos] = await connection.execute(queryVerificacaoExtra, [extra_resource_id, childBookingId, end_time, start_time]);
-            if (extraConflitos.length > 0) {
-                await connection.rollback();
-                return res.status(400).json({
-                    message: "Lamentamos, mas o monitor extra selecionado já se encontra reservado para o horário."
-                });
-            }
-
-            if (childBooking) {
-                // Atualizar monitor existente
-                const childOldData = { resource_id: childBooking.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: childBooking.status };
-                const childNewData = { resource_id: extra_resource_id, start_time, end_time, status: childBooking.status };
-
-                await connection.execute(
-                    'UPDATE bookings SET resource_id = ?, start_time = ?, end_time = ? WHERE id = ?',
-                    [extra_resource_id, start_time, end_time, childBooking.id]
-                );
-
-                await connection.execute(
-                    'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
-                    [childBooking.id, 'update', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
-                );
-            } else {
-                // Criar nova reserva para monitor extra
-                const [extraResult] = await connection.execute(
-                    'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id) VALUES (?, ?, ?, ?, ?, ?)',
-                    [user_id, extra_resource_id, start_time, end_time, 'confirmed', booking_id]
-                );
-
-                const extraBookingData = { resource_id: extra_resource_id, start_time, end_time, status: 'confirmed', parent_booking_id: booking_id };
-                await connection.execute(
-                    'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
-                    [extraResult.insertId, 'create', JSON.stringify(extraBookingData), user_id]
-                );
-            }
-        } else {
-            // Se extra_resource_id não foi passado mas existia monitor extra, cancelá-lo
-            if (childBooking) {
-                const childOldData = { resource_id: childBooking.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: childBooking.status };
+        // Executar a sincronização
+        // A. Remover/Cancelar extras que já não estão selecionados
+        for (const child of existingChildBookings) {
+            if (!resolved_extra_resource_ids.includes(child.resource_id)) {
+                const childOldData = { resource_id: child.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: child.status };
                 const childNewData = { ...childOldData, status: 'cancelled' };
 
                 await connection.execute(
                     "UPDATE bookings SET status = 'cancelled' WHERE id = ?",
-                    [childBooking.id]
+                    [child.id]
                 );
 
                 await connection.execute(
                     'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
-                    [childBooking.id, 'cancel', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
+                    [child.id, 'cancel', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
+                );
+            }
+        }
+
+        // B. Atualizar horário dos extras que são mantidos, ou adicionar novos extras
+        for (const extra of extrasMetadata) {
+            const child = existingChildBookings.find(b => b.resource_id === extra.id);
+            if (child) {
+                // Sincronizar o horário do extra mantido
+                const childOldData = { resource_id: child.resource_id, start_time: oldBooking.start_time, end_time: oldBooking.end_time, status: child.status };
+                const childNewData = { resource_id: extra.id, start_time, end_time, status: child.status };
+
+                await connection.execute(
+                    'UPDATE bookings SET start_time = ?, end_time = ? WHERE id = ?',
+                    [start_time, end_time, child.id]
+                );
+
+                await connection.execute(
+                    'INSERT INTO booking_history (booking_id, action, old_data, new_data, changed_by) VALUES (?, ?, ?, ?, ?)',
+                    [child.id, 'update', JSON.stringify(childOldData), JSON.stringify(childNewData), user_id]
+                );
+            } else {
+                // Adicionar novo extra
+                const [extraResult] = await connection.execute(
+                    'INSERT INTO bookings (user_id, resource_id, start_time, end_time, status, parent_booking_id) VALUES (?, ?, ?, ?, ?, ?)',
+                    [user_id, extra.id, start_time, end_time, 'confirmed', booking_id]
+                );
+
+                const extraBookingData = { resource_id: extra.id, start_time, end_time, status: 'confirmed', parent_booking_id: booking_id };
+                await connection.execute(
+                    'INSERT INTO booking_history (booking_id, action, new_data, changed_by) VALUES (?, ?, ?, ?)',
+                    [extraResult.insertId, 'create', JSON.stringify(extraBookingData), user_id]
                 );
             }
         }
@@ -1168,18 +1216,23 @@ exports.getAllBookings = async (req, res) => {
             bookingIds
         );
 
+        // Agrupa os equipamentos extras em memória
         const childMap = {};
         allChildBookings.forEach(c => {
-            childMap[c.parent_booking_id] = {
+            if (!childMap[c.parent_booking_id]) {
+                childMap[c.parent_booking_id] = [];
+            }
+            childMap[c.parent_booking_id].push({
                 booking_id: c.booking_id,
                 resource_id: c.resource_id,
                 resource_name: c.resource_name
-            };
+            });
         });
 
         for (const booking of bookings) {
             booking.guests = guestsMap[booking.booking_id] || [];
-            booking.extra = childMap[booking.booking_id] || null;
+            booking.extras = childMap[booking.booking_id] || [];
+            booking.extra = booking.extras.length > 0 ? booking.extras[0] : null;
         }
 
         return res.status(200).json(bookings);

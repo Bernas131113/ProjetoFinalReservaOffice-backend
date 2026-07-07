@@ -18,7 +18,9 @@ const createBookingValidation = [
     }),
     body('guests').optional().isArray().withMessage('Guests deve ser um array.'),
     body('guests.*').optional().isEmail().withMessage('Todos os convidados devem ter um email válido.'),
-    body('extra_resource_id').optional({ nullable: true }).isInt().withMessage('Extra resource ID deve ser um número inteiro.')
+    body('extra_resource_id').optional({ nullable: true }).isInt().withMessage('Extra resource ID deve ser um número inteiro.'),
+    body('extra_resource_ids').optional().isArray().withMessage('Extra resource IDs deve ser um array.'),
+    body('extra_resource_ids.*').optional().isInt().withMessage('Cada ID de recurso extra deve ser um número inteiro.')
 ];
 
 const updateBookingValidation = [
@@ -33,7 +35,9 @@ const updateBookingValidation = [
     }),
     body('guests').optional().isArray().withMessage('Guests deve ser um array.'),
     body('guests.*').optional().isEmail().withMessage('Todos os convidados devem ter um email válido.'),
-    body('extra_resource_id').optional({ nullable: true }).isInt().withMessage('Extra resource ID deve ser um número inteiro.')
+    body('extra_resource_id').optional({ nullable: true }).isInt().withMessage('Extra resource ID deve ser um número inteiro.'),
+    body('extra_resource_ids').optional().isArray().withMessage('Extra resource IDs deve ser um array.'),
+    body('extra_resource_ids.*').optional().isInt().withMessage('Cada ID de recurso extra deve ser um número inteiro.')
 ];
 
 const cancelBookingValidation = [
