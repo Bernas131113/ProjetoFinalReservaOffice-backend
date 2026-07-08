@@ -6,20 +6,24 @@ const { cancelarReservasENotificar } = require('./resourceController');
 exports.createTicket = async (req, res) => {
     const { resource_id, title, description, urgency } = req.body;
     const reported_by = req.user.id;
+    const userRole = req.user.role;
 
     if (!title || !description) {
         return res.status(400).json({ message: "Título e descrição são obrigatórios." });
     }
 
+    // Apenas admin ou tecnico podem definir a urgência na criação. Caso contrário, assume-se sempre 'medium'
+    const finalUrgency = (userRole === 'admin' || userRole === 'tecnico') ? (urgency || 'medium') : 'medium';
+
     try {
         const [result] = await db.execute(
             "INSERT INTO tickets (resource_id, reported_by, title, description, urgency, status) VALUES (?, ?, ?, ?, ?, 'pending')",
-            [resource_id || null, reported_by, title, description, urgency || 'medium']
+            [resource_id || null, reported_by, title, description, finalUrgency]
         );
         const ticketId = result.insertId;
 
         // Se a urgência for Alta e tiver recurso associado, coloca o recurso em manutenção automaticamente
-        if (urgency === 'high' && resource_id) {
+        if (finalUrgency === 'high' && resource_id) {
             await db.execute("UPDATE resources SET status = 'maintenance' WHERE id = ?", [resource_id]);
             await cancelarReservasENotificar(resource_id, 'maintenance');
         }
@@ -63,8 +67,8 @@ exports.createTicket = async (req, res) => {
             for (const tech of techs) {
                 await sendEmail({
                     email: tech.email,
-                    subject: `[Ticket #${ticketId}] Nova Avaria Reportada - Urgência ${urgency || 'Média'}`,
-                    message: `Olá ${tech.name},\n\nFoi reportado um novo problema no teu escritório base:\n\nTítulo: ${title}\nDescrição: ${description}\nUrgência: ${urgency || 'medium'}\n\nPor favor, aceda ao painel de tickets para gerir esta avaria.\n\nObrigado,\nEquipa Reserva Office`,
+                    subject: `[Ticket #${ticketId}] Nova Avaria Reportada - Urgência ${finalUrgency === 'high' ? 'Alta' : finalUrgency === 'medium' ? 'Média' : 'Baixa'}`,
+                    message: `Olá ${tech.name},\n\nFoi reportado um novo problema no teu escritório base:\n\nTítulo: ${title}\nDescrição: ${description}\nUrgência: ${finalUrgency}\n\nPor favor, aceda ao painel de tickets para gerir esta avaria.\n\nObrigado,\nEquipa Reserva Office`,
                     email_type: 'new_ticket'
                 });
             }
@@ -219,23 +223,23 @@ exports.assignTicket = async (req, res) => {
     }
 };
 
-// 5. Atualizar Estado do Ticket (Ex: Fechar / Resolver)
+// 5. Atualizar Estado/Urgência do Ticket (Técnico ou Admin)
 exports.updateTicketStatus = async (req, res) => {
     const { id } = req.params;
-    const { status, resolution_notes } = req.body;
+    const { status, resolution_notes, urgency } = req.body;
     const userRole = req.user.role;
 
     if (userRole !== 'admin' && userRole !== 'tecnico') {
-        return res.status(403).json({ message: "Apenas técnicos ou administradores podem atualizar o estado de tickets." });
+        return res.status(403).json({ message: "Apenas técnicos ou administradores podem atualizar tickets." });
     }
 
-    if (!status) {
-        return res.status(400).json({ message: "O estado do ticket é obrigatório." });
+    if (status === undefined && resolution_notes === undefined && urgency === undefined) {
+        return res.status(400).json({ message: "Por favor, forneça pelo menos um campo para atualizar (status, urgency, resolution_notes)." });
     }
 
     try {
         const [tickets] = await db.execute(
-            'SELECT resource_id, reported_by, title FROM tickets WHERE id = ?',
+            'SELECT resource_id, reported_by, title, status, urgency FROM tickets WHERE id = ?',
             [id]
         );
 
@@ -245,53 +249,86 @@ exports.updateTicketStatus = async (req, res) => {
 
         const ticket = tickets[0];
 
-        let updateQuery = 'UPDATE tickets SET status = ?, resolution_notes = ?';
-        const params = [status, resolution_notes || null];
+        let updateParts = [];
+        const params = [];
 
-        if (status === 'resolved') {
-            updateQuery += ', resolved_at = NOW()';
-        } else {
-            updateQuery += ', resolved_at = NULL';
+        if (status !== undefined) {
+            updateParts.push('status = ?');
+            params.push(status);
+            if (status === 'resolved') {
+                updateParts.push('resolved_at = NOW()');
+            } else {
+                updateParts.push('resolved_at = NULL');
+            }
         }
 
-        updateQuery += ' WHERE id = ?';
+        if (resolution_notes !== undefined) {
+            updateParts.push('resolution_notes = ?');
+            params.push(resolution_notes || null);
+        }
+
+        if (urgency !== undefined) {
+            updateParts.push('urgency = ?');
+            params.push(urgency);
+        }
+
+        updateParts.push('updated_at = CURRENT_TIMESTAMP');
+
+        let updateQuery = `UPDATE tickets SET ${updateParts.join(', ')} WHERE id = ?`;
         params.push(id);
 
         await db.execute(updateQuery, params);
 
-        // Se o ticket foi resolvido e possui um recurso associado
-        if (status === 'resolved' && ticket.resource_id) {
-            const resId = ticket.resource_id;
-            
-            // Verifica se existem OUTROS tickets ativos de urgência alta para este recurso
-            const [otherHighUrgency] = await db.execute(
-                "SELECT id FROM tickets WHERE resource_id = ? AND status IN ('pending', 'in_progress') AND urgency = 'high' AND id != ?",
-                [resId, id]
-            );
+        // Tratar efeitos secundários no recurso (manutenção vs ativo)
+        const updatedStatus = status !== undefined ? status : ticket.status;
+        const updatedUrgency = urgency !== undefined ? urgency : ticket.urgency;
+        const resId = ticket.resource_id;
 
-            // Se não houver mais avarias graves ativas, coloca o recurso como ativo novamente
-            if (otherHighUrgency.length === 0) {
-                await db.execute("UPDATE resources SET status = 'active' WHERE id = ?", [resId]);
+        if (resId) {
+            const isActiveTicket = ['pending', 'in_progress'].includes(updatedStatus);
+            if (isActiveTicket && updatedUrgency === 'high') {
+                // Colocar recurso em manutenção
+                const [resStatus] = await db.execute("SELECT status FROM resources WHERE id = ?", [resId]);
+                if (resStatus.length > 0 && resStatus[0].status !== 'maintenance') {
+                    await db.execute("UPDATE resources SET status = 'maintenance' WHERE id = ?", [resId]);
+                    await cancelarReservasENotificar(resId, 'maintenance');
+                }
+            } else {
+                // Verificar se devemos repor para ativo (não é mais alta urgência ativa ou o ticket foi fechado/resolvido/cancelado)
+                const [otherHighUrgency] = await db.execute(
+                    `SELECT id FROM tickets 
+                     WHERE resource_id = ? 
+                     AND status IN ('pending', 'in_progress') 
+                     AND urgency = 'high' 
+                     AND id != ?`,
+                    [resId, id]
+                );
+
+                if (otherHighUrgency.length === 0) {
+                    await db.execute("UPDATE resources SET status = 'active' WHERE id = ?", [resId]);
+                }
             }
         }
 
-        // Notificar o utilizador que reportou a avaria por email
-        try {
-            const [reporter] = await db.execute('SELECT email, name FROM users WHERE id = ?', [ticket.reported_by]);
-            if (reporter.length > 0) {
-                await sendEmail({
-                    email: reporter[0].email,
-                    subject: `[Ticket #${id}] Avaria Resolvida - ${ticket.title}`,
-                    message: `Olá ${reporter[0].name},\n\nO seu ticket de avaria #${id} ("${ticket.title}") foi marcado como RESOLVIDO.\n\nNotas do Técnico:\n${resolution_notes || 'Nenhuma nota registada.'}\n\nObrigado por nos ajudar a manter o escritório funcional!\n\nEquipa Reserva Office`,
-                    user_id: ticket.reported_by,
-                    email_type: 'ticket_update'
-                });
+        // Notificar o utilizador que reportou a avaria por email caso o estado tenha mudado para resolvido
+        if (status === 'resolved') {
+            try {
+                const [reporter] = await db.execute('SELECT email, name FROM users WHERE id = ?', [ticket.reported_by]);
+                if (reporter.length > 0) {
+                    await sendEmail({
+                        email: reporter[0].email,
+                        subject: `[Ticket #${id}] Avaria Resolvida - ${ticket.title}`,
+                        message: `Olá ${reporter[0].name},\n\nO seu ticket de avaria #${id} ("${ticket.title}") foi marcado como RESOLVIDO.\n\nNotas do Técnico:\n${resolution_notes || 'Nenhuma nota registada.'}\n\nObrigado por nos ajudar a manter o escritório funcional!\n\nEquipa Reserva Office`,
+                        user_id: ticket.reported_by,
+                        email_type: 'ticket_update'
+                    });
+                }
+            } catch (emailError) {
+                console.error('Erro ao enviar email de atualização de ticket:', emailError.message);
             }
-        } catch (emailError) {
-            console.error('Erro ao enviar email de atualização de ticket:', emailError.message);
         }
 
-        res.status(200).json({ message: `Estado do ticket atualizado para: ${status}.` });
+        res.status(200).json({ message: "Ticket atualizado com sucesso." });
     } catch (error) {
         console.error('Erro ao atualizar estado do ticket:', error);
         res.status(500).json({ message: "Erro ao atualizar o estado do ticket." });
