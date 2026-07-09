@@ -18,29 +18,29 @@ const autoCompleteBookings = async () => {
 // Função auxiliar para verificar se o escritório está aberto durante toda a reserva
 const checkOfficeAvailability = (start_time, end_time, openTime, closeTime, workingDays) => {
     const normalizedClose = closeTime === '00:00' ? '24:00' : closeTime;
-    
+
     const dateStart = new Date(start_time.replace(' ', 'T') + 'Z');
     const dateEnd = new Date(end_time.replace(' ', 'T') + 'Z');
-    
+
     let current = new Date(dateStart);
     let iterations = 0;
-    
+
     while (current <= dateEnd && iterations < 400) {
         iterations++;
         const dayOfWeek = current.getUTCDay() + 1; // 1 = Domingo, 2 = Segunda...
-        
+
         // Determinar o início e fim do segmento para o dia atual
         let startHM = '00:00';
         let endHM = '24:00';
-        
+
         const isStartDay = current.getUTCDate() === dateStart.getUTCDate() &&
-                            current.getUTCMonth() === dateStart.getUTCMonth() &&
-                            current.getUTCFullYear() === dateStart.getUTCFullYear();
-                            
+            current.getUTCMonth() === dateStart.getUTCMonth() &&
+            current.getUTCFullYear() === dateStart.getUTCFullYear();
+
         const isEndDay = current.getUTCDate() === dateEnd.getUTCDate() &&
-                          current.getUTCMonth() === dateEnd.getUTCMonth() &&
-                          current.getUTCFullYear() === dateEnd.getUTCFullYear();
-                          
+            current.getUTCMonth() === dateEnd.getUTCMonth() &&
+            current.getUTCFullYear() === dateEnd.getUTCFullYear();
+
         if (isStartDay) {
             startHM = start_time.substring(11, 16);
         }
@@ -49,25 +49,25 @@ const checkOfficeAvailability = (start_time, end_time, openTime, closeTime, work
         } else {
             endHM = '23:59';
         }
-        
+
         // Se o segmento tem duração zero (ex: termina exatamente à meia-noite do dia seguinte), não precisamos de o validar
         if (startHM === endHM) {
             current.setUTCDate(current.getUTCDate() + 1);
             continue;
         }
-        
+
         // Verificar se é dia de funcionamento
         if (!workingDays.includes(dayOfWeek)) {
             return { open: false, reason: 'day' };
         }
-        
+
         if (startHM < openTime || endHM > normalizedClose) {
             return { open: false, reason: 'hours' };
         }
-        
+
         current.setUTCDate(current.getUTCDate() + 1);
     }
-    
+
     return { open: true };
 };
 
@@ -146,6 +146,8 @@ exports.createBooking = async (req, res) => {
         }
     }
 
+    // Variável para acumular dias em que o escritório está fechado e que serão ignorados na série recorrente
+    let diasIgnorados = 0;
     let connection;
     try {
         // Obter uma ligação do pool para gerir a transação
@@ -201,17 +203,31 @@ exports.createBooking = async (req, res) => {
                 ? (typeof resourceOffice.working_days === 'string' ? JSON.parse(resourceOffice.working_days) : resourceOffice.working_days)
                 : [2, 3, 4, 5, 6]; // Segunda a Sexta por defeito
 
-            for (const ocorrencia of ocorrencias) {
-                const check = checkOfficeAvailability(ocorrencia.start_time, ocorrencia.end_time, openTime, closeTime, workingDays);
-                if (!check.open) {
-                    await connection.rollback();
-                    if (check.reason === 'day') {
-                        return res.status(400).json({ message: "Não é possível efetuar reservas fora dos dias de funcionamento do escritório." });
-                    } else {
-                        return res.status(400).json({ message: `O horário selecionado está fora do período de funcionamento (${openTime} - ${closeTime}).` });
-                    }
+            // 1. Validar obrigatoriamente a primeira ocorrência (reserva inicial)
+            const firstCheck = checkOfficeAvailability(ocorrencias[0].start_time, ocorrencias[0].end_time, openTime, closeTime, workingDays);
+            if (!firstCheck.open) {
+                await connection.rollback();
+                if (firstCheck.reason === 'day') {
+                    return res.status(400).json({ message: "Não é possível efetuar a reserva inicial num dia de encerramento do escritório." });
+                } else {
+                    return res.status(400).json({ message: `O horário selecionado está fora do período de funcionamento (${openTime} - ${closeTime}).` });
                 }
             }
+
+            // 2. Filtrar as ocorrências recorrentes subsequentes: manter as abertas e ignorar as fechadas
+            const validOcorrencias = [ocorrencias[0]];
+            for (let i = 1; i < ocorrencias.length; i++) {
+                const check = checkOfficeAvailability(ocorrencias[i].start_time, ocorrencias[i].end_time, openTime, closeTime, workingDays);
+                if (check.open) {
+                    validOcorrencias.push(ocorrencias[i]);
+                } else {
+                    diasIgnorados++;
+                }
+            }
+
+            // Substituir a lista original pela lista filtrada de dias úteis em funcionamento
+            ocorrencias.length = 0;
+            ocorrencias.push(...validOcorrencias);
         }
 
         for (const ocorrencia of ocorrencias) {
@@ -395,8 +411,12 @@ Equipa Reserva Office`;
                 .catch(err => console.error("Erro ao obter nome do organizador para email:", err));
         }
 
+        const msgFinal = diasIgnorados > 0
+            ? `Reserva para ${recursos[0].resource_name} efetuada! Nota: foram ignorados ${diasIgnorados} dia(s) em que o escritório está fechado.`
+            : `Reserva para ${recursos[0].resource_name} efetuada com sucesso!`;
+
         return res.status(201).json({
-            message: "Reserva efetuada com sucesso!",
+            message: msgFinal,
             booking_id: mainBookingIds[0]
         });
 
@@ -912,7 +932,7 @@ exports.updateBooking = async (req, res) => {
                 // Verificar conflitos do equipamento extra (excluindo a reserva filho atual se existir)
                 const child = existingChildBookings.find(b => b.resource_id === extraId);
                 const childBookingId = child ? child.id : 0;
-                
+
                 // Só validamos se for um novo recurso OU se o horário tiver mudado
                 const timeChanged = start_time !== oldBooking.start_time || end_time !== oldBooking.end_time;
                 if (!child || timeChanged) {
