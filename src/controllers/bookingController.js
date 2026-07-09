@@ -15,6 +15,62 @@ const autoCompleteBookings = async () => {
     }
 };
 
+// Função auxiliar para verificar se o escritório está aberto durante toda a reserva
+const checkOfficeAvailability = (start_time, end_time, openTime, closeTime, workingDays) => {
+    const normalizedClose = closeTime === '00:00' ? '24:00' : closeTime;
+    
+    const dateStart = new Date(start_time.replace(' ', 'T') + 'Z');
+    const dateEnd = new Date(end_time.replace(' ', 'T') + 'Z');
+    
+    let current = new Date(dateStart);
+    let iterations = 0;
+    
+    while (current <= dateEnd && iterations < 400) {
+        iterations++;
+        const dayOfWeek = current.getUTCDay() + 1; // 1 = Domingo, 2 = Segunda...
+        
+        // Determinar o início e fim do segmento para o dia atual
+        let startHM = '00:00';
+        let endHM = '24:00';
+        
+        const isStartDay = current.getUTCDate() === dateStart.getUTCDate() &&
+                            current.getUTCMonth() === dateStart.getUTCMonth() &&
+                            current.getUTCFullYear() === dateStart.getUTCFullYear();
+                            
+        const isEndDay = current.getUTCDate() === dateEnd.getUTCDate() &&
+                          current.getUTCMonth() === dateEnd.getUTCMonth() &&
+                          current.getUTCFullYear() === dateEnd.getUTCFullYear();
+                          
+        if (isStartDay) {
+            startHM = start_time.substring(11, 16);
+        }
+        if (isEndDay) {
+            endHM = end_time.substring(11, 16);
+        } else {
+            endHM = '23:59';
+        }
+        
+        // Se o segmento tem duração zero (ex: termina exatamente à meia-noite do dia seguinte), não precisamos de o validar
+        if (startHM === endHM) {
+            current.setUTCDate(current.getUTCDate() + 1);
+            continue;
+        }
+        
+        // Verificar se é dia de funcionamento
+        if (!workingDays.includes(dayOfWeek)) {
+            return { open: false, reason: 'day' };
+        }
+        
+        if (startHM < openTime || endHM > normalizedClose) {
+            return { open: false, reason: 'hours' };
+        }
+        
+        current.setUTCDate(current.getUTCDate() + 1);
+    }
+    
+    return { open: true };
+};
+
 // Criar nova reserva com validação de conflitos
 exports.createBooking = async (req, res) => {
     const { resource_id, start_time, end_time, guests, extra_resource_id, extra_resource_ids, recurrence } = req.body;
@@ -146,25 +202,14 @@ exports.createBooking = async (req, res) => {
                 : [2, 3, 4, 5, 6]; // Segunda a Sexta por defeito
 
             for (const ocorrencia of ocorrencias) {
-                const dateStart = new Date(ocorrencia.start_time.replace(' ', 'T') + 'Z');
-                const dateEnd = new Date(ocorrencia.end_time.replace(' ', 'T') + 'Z');
-
-                const startHM = ocorrencia.start_time.substring(11, 16);
-                const endHM = ocorrencia.end_time.substring(11, 16);
-
-                const dayOfWeekStart = dateStart.getUTCDay() + 1; // 1 = Domingo, 2 = Segunda...
-                const dayOfWeekEnd = dateEnd.getUTCDay() + 1;
-
-                // Validar dia da semana
-                if (!workingDays.includes(dayOfWeekStart) || !workingDays.includes(dayOfWeekEnd)) {
+                const check = checkOfficeAvailability(ocorrencia.start_time, ocorrencia.end_time, openTime, closeTime, workingDays);
+                if (!check.open) {
                     await connection.rollback();
-                    return res.status(400).json({ message: "Não é possível efetuar reservas fora dos dias de funcionamento do escritório." });
-                }
-
-                // Validar horas e minutos
-                if (startHM < openTime || endHM > closeTime) {
-                    await connection.rollback();
-                    return res.status(400).json({ message: `O horário selecionado está fora do período de funcionamento (${openTime} - ${closeTime}).` });
+                    if (check.reason === 'day') {
+                        return res.status(400).json({ message: "Não é possível efetuar reservas fora dos dias de funcionamento do escritório." });
+                    } else {
+                        return res.status(400).json({ message: `O horário selecionado está fora do período de funcionamento (${openTime} - ${closeTime}).` });
+                    }
                 }
             }
         }
@@ -785,23 +830,14 @@ exports.updateBooking = async (req, res) => {
                 ? (typeof resourceOffice.working_days === 'string' ? JSON.parse(resourceOffice.working_days) : resourceOffice.working_days)
                 : [2, 3, 4, 5, 6];
 
-            const startHM = start_time.substring(11, 16);
-            const endHM = end_time.substring(11, 16);
-
-            const dateStart = new Date(start_time.replace(' ', 'T') + 'Z');
-            const dateEnd = new Date(end_time.replace(' ', 'T') + 'Z');
-
-            const dayOfWeekStart = dateStart.getUTCDay() + 1;
-            const dayOfWeekEnd = dateEnd.getUTCDay() + 1;
-
-            if (!workingDays.includes(dayOfWeekStart) || !workingDays.includes(dayOfWeekEnd)) {
+            const check = checkOfficeAvailability(start_time, end_time, openTime, closeTime, workingDays);
+            if (!check.open) {
                 await connection.rollback();
-                return res.status(400).json({ message: "Não é possível alterar reservas para fora dos dias de funcionamento do escritório." });
-            }
-
-            if (startHM < openTime || endHM > closeTime) {
-                await connection.rollback();
-                return res.status(400).json({ message: `O novo horário está fora do período de funcionamento do escritório (${openTime} - ${closeTime}).` });
+                if (check.reason === 'day') {
+                    return res.status(400).json({ message: "Não é possível alterar reservas para fora dos dias de funcionamento do escritório." });
+                } else {
+                    return res.status(400).json({ message: `O novo horário está fora do período de funcionamento do escritório (${openTime} - ${closeTime}).` });
+                }
             }
         }
 
@@ -1175,11 +1211,14 @@ exports.getAllBookings = async (req, res) => {
                 u.name AS user_name,
                 u.email AS user_email,
                 r.name AS resource_name, 
-                rt.name AS resource_type
+                rt.name AS resource_type,
+                o.name AS building
             FROM bookings b
             JOIN users u ON b.user_id = u.id
             JOIN resources r ON b.resource_id = r.id
             JOIN resource_types rt ON r.type_id = rt.id
+            LEFT JOIN locations l ON r.location_id = l.id
+            LEFT JOIN offices o ON l.office_id = o.id
             WHERE b.parent_booking_id IS NULL
             ORDER BY b.start_time DESC
         `;
